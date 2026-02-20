@@ -19,7 +19,7 @@ const { class: className, style } = Astro.props;
 const resolvedSiteSettings =
   Astro.locals.siteSettings ?? (await getResolvedSiteSettings());
 
-// 从配置中获取站点开始日期
+// 从配置中获取建站日期
 const siteStartDate =
   resolvedSiteSettings.settings.site.siteStartDate || "2025-01-01";
 

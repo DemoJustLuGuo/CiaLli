@@ -893,7 +893,7 @@ export const zh_CN: Translation = {
     [Key.siteSettingsLanguageZhTW]: "繁体中文",
     [Key.siteSettingsLanguageEn]: "英文",
     [Key.siteSettingsLanguageJa]: "日文",
-    [Key.siteSettingsSiteStartDate]: "站点开始日期",
+    [Key.siteSettingsSiteStartDate]: "建站日期",
     [Key.siteSettingsSiteSubtitle]: "站点副标题",
     [Key.siteSettingsSiteTitle]: "站点标题",
     [Key.siteSettingsTocDepth]: "目录深度",

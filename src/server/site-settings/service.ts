@@ -128,6 +128,7 @@ function isLikelyDirectusFileId(value: string): boolean {
 
 const GTM_ID_PATTERN = /^GTM-[A-Z0-9]+$/i;
 const CLARITY_ID_PATTERN = /^[a-z0-9]{4,64}$/i;
+const SITE_PROFILE_AVATAR_PATH = "assets/images/avatar.webp";
 
 function normalizeAnalyticsId(
     value: unknown,
@@ -394,11 +395,7 @@ function normalizeSettings(
               .filter((entry): entry is NavLinkLike => Boolean(entry))
         : [];
     merged.navBar.links = normalizedLinks;
-
-    merged.profile.avatar = normalizeAssetPath(
-        String(merged.profile.avatar || ""),
-        base.profile.avatar,
-    );
+    merged.profile.avatar = SITE_PROFILE_AVATAR_PATH;
     merged.profile.name =
         String(merged.profile.name || base.profile.name).trim() ||
         base.profile.name;
