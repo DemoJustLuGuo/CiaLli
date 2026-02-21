@@ -45,6 +45,7 @@ vi.mock("@/server/security/rate-limit", () => ({
 
 vi.mock("@/server/security/csrf", () => ({
     assertCsrfToken: vi.fn(),
+    rotateCsrfCookie: vi.fn(),
 }));
 
 import {
@@ -57,7 +58,7 @@ import {
     applyRateLimit,
     rateLimitResponse,
 } from "@/server/security/rate-limit";
-import { assertCsrfToken } from "@/server/security/csrf";
+import { assertCsrfToken, rotateCsrfCookie } from "@/server/security/csrf";
 import { POST } from "@/pages/api/auth/login";
 
 const mockedDirectusLogin = vi.mocked(directusLogin);
@@ -67,6 +68,7 @@ const mockedReadMany = vi.mocked(readMany);
 const mockedApplyRateLimit = vi.mocked(applyRateLimit);
 const mockedRateLimitResponse = vi.mocked(rateLimitResponse);
 const mockedAssertCsrfToken = vi.mocked(assertCsrfToken);
+const mockedRotateCsrfCookie = vi.mocked(rotateCsrfCookie);
 
 function makeContext(body: Record<string, unknown>): APIContext {
     const csrf = "csrf-token";
@@ -142,6 +144,7 @@ describe("/api/auth/login rate limit", () => {
             "email:cialichannel@example.com",
             "auth",
         );
+        expect(mockedRotateCsrfCookie).toHaveBeenCalledTimes(1);
         expect(response.headers.get("X-RateLimit-Remaining")).toBe("7");
     });
 
@@ -174,5 +177,6 @@ describe("/api/auth/login rate limit", () => {
         expect(response.status).toBe(429);
         expect(mockedRateLimitResponse).toHaveBeenCalledTimes(1);
         expect(mockedDirectusLogin).not.toHaveBeenCalled();
+        expect(mockedRotateCsrfCookie).not.toHaveBeenCalled();
     });
 });

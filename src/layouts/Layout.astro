@@ -4,6 +4,7 @@ import MusicPlayer from "@components/widget/MusicPlayer.svelte";
 import DesktopOnlyNotice from "@components/misc/DesktopOnlyNotice.astro";
 import { buildLegacySiteConfig } from "@/config";
 import { getResolvedSiteSettings } from "@/server/site-settings/service";
+import { readCsrfToken } from "@/server/security/csrf";
 import type { ResolvedSiteSettings } from "@/types/site-settings";
 
 const BANNER_HEIGHT = 35;
@@ -56,6 +57,9 @@ const analyticsConfig = {
     resolvedSiteSettings.settings.analytics.clarityId || "",
   ).trim(),
 };
+const csrfTokenFromLocals =
+  typeof Astro.locals.csrfToken === "string" ? Astro.locals.csrfToken : "";
+const csrfToken = csrfTokenFromLocals || readCsrfToken(Astro);
 
 // 在首屏渲染时先为 body 打上类名，用于决定 banner 高度。
 // 虽然 Swup 会在切页后更新 body，但时机在动画之后，会造成高度切换延迟。
@@ -360,6 +364,7 @@ const bodyStyle = bodyFontFamily ? `font-family: ${bodyFontFamily};` : "";
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={description || pageTitle} />
     <meta name="viewport" content="width=device-width" />
+    <meta name="cialli-csrf-token" content={csrfToken} />
     <meta name="generator" content={Astro.generator} />
     {
       favicons.map((favicon) => (

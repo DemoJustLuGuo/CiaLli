@@ -24,7 +24,7 @@ import {
     applyRateLimit,
     rateLimitResponse,
 } from "@/server/security/rate-limit";
-import { assertCsrfToken } from "@/server/security/csrf";
+import { assertCsrfToken, rotateCsrfCookie } from "@/server/security/csrf";
 import { AppError } from "@/server/api/errors";
 import type { JsonObject, JsonValue } from "@/types/json";
 import { getJsonString, isJsonObject } from "@utils/json-utils";
@@ -226,6 +226,8 @@ export async function POST(context: APIContext): Promise<Response> {
             remember ? "1" : "0",
             getRememberCookieOptions({ requestUrl: url, remember }),
         );
+        // 登录成功后轮换 CSRF token，避免沿用登录前 token。
+        rotateCsrfCookie(context);
 
         let user: PublicUserInfo = {
             id: "",

@@ -750,8 +750,11 @@ const registerI18n = {
     }
 
     function getCsrfToken() {
-      const m = document.cookie.match(/(?:^|;\s*)cialli_csrf=([^;]*)/);
-      return m ? decodeURIComponent(m[1]) : "";
+      const element = document.querySelector('meta[name="cialli-csrf-token"]');
+      if (!(element instanceof HTMLMetaElement)) {
+        return "";
+      }
+      return element.content || "";
     }
     const AVATAR_OUTPUT_SIZE = 512;
     const AVATAR_ZOOM_MIN = 100;
