@@ -452,8 +452,7 @@ export function setupSwupIntentSource(
             const sameLayout =
                 layoutComparable && currentLayoutKey === newLayoutKey;
             const nextPatch = extractSidebarProfilePatch(newSidebar);
-            const canPatch =
-                sameLayout && nextPatch !== null;
+            const canPatch = sameLayout && nextPatch !== null;
 
             const preserveSidebar = (): void => {
                 visit.containers = visit.containers.filter(
