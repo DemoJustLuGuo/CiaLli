@@ -240,35 +240,6 @@ function applyBannerToSpecShiftVariables(
     );
 }
 
-function isSidebarProfilePatchEqual(
-    left: SidebarProfilePatch,
-    right: SidebarProfilePatch,
-): boolean {
-    if (left.socialMode !== right.socialMode) {
-        return false;
-    }
-    if (left.socialLinks.length !== right.socialLinks.length) {
-        return false;
-    }
-    const linksEqual = left.socialLinks.every((link, index) => {
-        const target = right.socialLinks[index];
-        return (
-            link.platform === target?.platform &&
-            link.url === target?.url &&
-            link.label === target?.label
-        );
-    });
-
-    return (
-        left.uid === right.uid &&
-        left.displayName === right.displayName &&
-        left.bio === right.bio &&
-        left.profileLink === right.profileLink &&
-        left.avatarUrl === right.avatarUrl &&
-        linksEqual
-    );
-}
-
 function stripOnloadAnimationClasses(scope: HTMLElement): void {
     scope.classList.remove("onload-animation");
     const animatedElements =
@@ -480,10 +451,9 @@ export function setupSwupIntentSource(
                 currentLayoutKey.length > 0 && newLayoutKey.length > 0;
             const sameLayout =
                 layoutComparable && currentLayoutKey === newLayoutKey;
-            const currentPatch = extractSidebarProfilePatch(currentSidebar);
             const nextPatch = extractSidebarProfilePatch(newSidebar);
             const canPatch =
-                sameLayout && currentPatch !== null && nextPatch !== null;
+                sameLayout && nextPatch !== null;
 
             const preserveSidebar = (): void => {
                 visit.containers = visit.containers.filter(
@@ -506,13 +476,8 @@ export function setupSwupIntentSource(
                     // Same account but different widget layout -> let Swup replace full sidebar.
                 } else {
                     preserveSidebar();
-                    if (
-                        canPatch &&
-                        !isSidebarProfilePatchEqual(
-                            currentPatch as SidebarProfilePatch,
-                            nextPatch as SidebarProfilePatch,
-                        )
-                    ) {
+                    if (canPatch) {
+                        // 每次保留 sidebar 时都应用新文档 patch，确保清除潜在的旧 DOM 残留。
                         pendingSidebarProfilePatch =
                             nextPatch as SidebarProfilePatch;
                     }

@@ -6,6 +6,7 @@ type SidebarSocialLink = {
     platform: string;
     url: string;
     label: string;
+    iconNodes: Node[];
 };
 
 export type SidebarProfilePatch = {
@@ -21,6 +22,26 @@ export type SidebarProfilePatch = {
 const PROFILE_UPDATE_TIMEOUT_MS = 420;
 const SAFE_SOCIAL_URL_RE = /^(https?:\/\/|mailto:|tel:)/i;
 const SOCIAL_LINK_FALLBACK_LABEL = "Link";
+const SOCIAL_ICON_TAG_ALLOWLIST = new Set([
+    "svg",
+    "path",
+    "g",
+    "circle",
+    "rect",
+    "line",
+    "polyline",
+    "polygon",
+    "ellipse",
+    "defs",
+    "clippath",
+    "mask",
+    "title",
+    "desc",
+    "symbol",
+    "use",
+    "span",
+    "i",
+]);
 
 function clean(value: string | null | undefined): string {
     return String(value || "").trim();
@@ -55,6 +76,7 @@ function createSocialLink(
     platform: string,
     url: string,
     label?: string,
+    iconNodes: Node[] = [],
 ): SidebarSocialLink | null {
     const normalizedUrl = clean(url);
     if (!normalizedUrl || !isSafeSocialUrl(normalizedUrl)) {
@@ -66,19 +88,87 @@ function createSocialLink(
         platform: normalizedPlatform || "website",
         url: normalizedUrl,
         label: resolveSocialLabel(normalizedPlatform, label),
+        iconNodes,
     };
 }
 
+function cloneSafeSocialNode(node: Node): Node | null {
+    if (node.nodeType === Node.TEXT_NODE) {
+        return document.createTextNode(node.textContent || "");
+    }
+
+    if (!(node instanceof Element)) {
+        return null;
+    }
+
+    const tagName = node.tagName.toLowerCase();
+    if (!SOCIAL_ICON_TAG_ALLOWLIST.has(tagName)) {
+        return null;
+    }
+
+    const namespace = node.namespaceURI || undefined;
+    const cloned = namespace
+        ? document.createElementNS(namespace, node.tagName)
+        : document.createElement(node.tagName);
+
+    for (const { name, value } of Array.from(node.attributes)) {
+        const lower = name.toLowerCase();
+        if (lower.startsWith("on") || lower === "style") {
+            continue;
+        }
+        if (lower === "href" || lower === "xlink:href") {
+            const normalizedHref = clean(value);
+            const safeRef =
+                normalizedHref.startsWith("#") ||
+                normalizedHref.startsWith("data:image/") ||
+                SAFE_SOCIAL_URL_RE.test(normalizedHref);
+            if (!safeRef) {
+                continue;
+            }
+        }
+        cloned.setAttribute(name, value);
+    }
+
+    for (const child of Array.from(node.childNodes)) {
+        const safeChild = cloneSafeSocialNode(child);
+        if (!safeChild) {
+            continue;
+        }
+        cloned.appendChild(safeChild);
+    }
+
+    return cloned;
+}
+
+function extractSocialIconNodes(anchor: HTMLAnchorElement): Node[] {
+    const iconNodes = Array.from(anchor.children)
+        .map((child) => cloneSafeSocialNode(child))
+        .filter((node): node is Node => node !== null);
+
+    return iconNodes;
+}
+
 function dedupeSocialLinks(links: SidebarSocialLink[]): SidebarSocialLink[] {
-    const seen = new Set<string>();
+    const indexMap = new Map<string, number>();
     const deduped: SidebarSocialLink[] = [];
 
     for (const link of links) {
         const key = `${link.platform}::${link.url}`;
-        if (seen.has(key)) {
+        const existingIndex = indexMap.get(key);
+        if (typeof existingIndex === "number") {
+            if (
+                deduped[existingIndex] &&
+                deduped[existingIndex].iconNodes.length === 0 &&
+                link.iconNodes.length > 0
+            ) {
+                deduped[existingIndex] = {
+                    ...deduped[existingIndex],
+                    iconNodes: link.iconNodes,
+                };
+            }
             continue;
         }
-        seen.add(key);
+        indexMap.set(key, deduped.length);
         deduped.push(link);
     }
 
@@ -108,7 +198,7 @@ function parseSocialLinksFromDataset(
                 const platform = clean(String(record.platform || ""));
                 const url = clean(String(record.url || ""));
                 const label = clean(String(record.label || ""));
-                return createSocialLink(platform, url, label);
+                return createSocialLink(platform, url, label, []);
             })
             .filter((item): item is SidebarSocialLink => item !== null);
 
@@ -130,7 +220,8 @@ function parseSocialLinksFromAnchors(
             const platform = clean(anchor.dataset.socialPlatform);
             const url = clean(anchor.getAttribute("href"));
             const label = clean(anchor.getAttribute("aria-label"));
-            return createSocialLink(platform, url, label);
+            const iconNodes = extractSocialIconNodes(anchor);
+            return createSocialLink(platform, url, label, iconNodes);
         })
         .filter((item): item is SidebarSocialLink => item !== null);
 
@@ -169,21 +260,36 @@ function createSocialAnchor(
     anchor.setAttribute("href", link.url);
     anchor.setAttribute("target", "_blank");
     anchor.dataset.socialPlatform = link.platform;
+    const hasSafeIcon = link.iconNodes.length > 0;
 
     if (isSingle) {
         anchor.className =
             "btn-regular rounded-lg h-10 gap-2 px-3 font-bold active:scale-95 inline-flex items-center";
-        const icon = document.createElement("span");
-        icon.className = "text-sm leading-none";
-        icon.textContent = "↗";
+        if (hasSafeIcon) {
+            for (const iconNode of link.iconNodes) {
+                anchor.appendChild(iconNode.cloneNode(true));
+            }
+        } else {
+            const icon = document.createElement("span");
+            icon.className = "text-sm leading-none";
+            icon.textContent = "↗";
+            anchor.appendChild(icon);
+        }
         const text = document.createElement("span");
         text.textContent = link.label;
-        anchor.append(icon, text);
+        anchor.appendChild(text);
         return anchor;
     }
 
     anchor.className =
         "btn-regular rounded-lg h-10 w-10 active:scale-90 inline-flex items-center justify-center text-xs font-semibold uppercase";
+    if (hasSafeIcon) {
+        for (const iconNode of link.iconNodes) {
+            anchor.appendChild(iconNode.cloneNode(true));
+        }
+        return anchor;
+    }
+
     const compactLabel = clean(link.label)
         .replace(/[^A-Za-z0-9]/g, "")
         .slice(0, 2)
@@ -354,13 +460,14 @@ export function extractSidebarProfilePatch(
         clean(avatar?.getAttribute("src"));
     const bioText =
         clean(root.dataset.sidebarProfileBio) || clean(bio?.textContent);
-    const socialLinks =
-        parseSocialLinksFromDataset(root.dataset.sidebarProfileSocialLinks) ||
-        [];
+    const socialLinksFromAnchors = parseSocialLinksFromAnchors(social);
+    const socialLinksFromDataset = parseSocialLinksFromDataset(
+        root.dataset.sidebarProfileSocialLinks,
+    );
     const normalizedSocialLinks =
-        socialLinks.length > 0
-            ? socialLinks
-            : parseSocialLinksFromAnchors(social);
+        socialLinksFromAnchors.length > 0
+            ? socialLinksFromAnchors
+            : socialLinksFromDataset;
     const socialMode = resolveSocialMode(
         root.dataset.sidebarProfileSocialMode,
         normalizedSocialLinks,
