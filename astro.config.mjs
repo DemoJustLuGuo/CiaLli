@@ -16,11 +16,17 @@ import {
     remarkPlugins,
 } from "./src/server/markdown/pipeline.ts";
 
+const _siteHostname = new URL(systemSiteConfig.siteURL).hostname;
+
 // https://astro.build/config
 export default defineConfig({
     site: systemSiteConfig.siteURL,
     base: "/",
     trailingSlash: "never",
+
+    security: {
+        allowedDomains: [{ hostname: _siteHostname }],
+    },
 
     output: "static",
     adapter: vercel(),
