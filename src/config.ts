@@ -10,7 +10,7 @@ import {
 import { LinkPreset } from "./types/config";
 
 export const systemSiteConfig: SystemSiteConfig = {
-    siteURL: "https://cialli.mysqil.com/",
+    siteURL: "https://www.ciallichannel.com/",
     lang: "zh_CN",
     themeColor: {
         hue: 285,
