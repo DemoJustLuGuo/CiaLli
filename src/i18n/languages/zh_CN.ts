@@ -466,7 +466,7 @@ export const zh_CN: Translation = {
     [Key.adminUsersNone]: "无",
     [Key.adminUsersProcessingRegistrationTitle]: "正在处理注册申请",
     [Key.adminUsersRegisterDisabled]: "已关闭",
-    [Key.adminUsersRegisterSwitchLabel]: "开放注册",
+    [Key.adminUsersRegisterSwitchLabel]: "开放注册入口",
     [Key.adminUsersRegisterSwitchTitle]: "注册开关",
     [Key.adminUsersRegistrationDetail]: "申请详情",
     [Key.adminUsersRegistrationExists]: "注册申请已存在",
