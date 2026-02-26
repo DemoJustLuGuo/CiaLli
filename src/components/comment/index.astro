@@ -35,7 +35,7 @@ const hasDirectusTarget = Boolean(moduleName && contentId);
   enabled && (
     <div
       class="card-base p-6 mb-4 relative overflow-visible"
-      id="directus-comment-root"
+      id="comment-root"
       data-module={moduleName || ""}
       data-content-id={contentId || ""}
       data-content-short-id={contentShortId || ""}
@@ -369,7 +369,7 @@ const hasDirectusTarget = Boolean(moduleName && contentId);
     };
 
   function initComments() {
-    const root = document.getElementById("directus-comment-root");
+    const root = document.getElementById("comment-root");
     if (!root) return;
     runtimeWindow._directusCommentNearObserver?.disconnect();
     runtimeWindow._directusCommentNearObserver = undefined;
@@ -603,7 +603,7 @@ const hasDirectusTarget = Boolean(moduleName && contentId);
         return true;
       }
       const hash = String(window.location.hash || "").trim();
-      return hash === "#directus-comment-root";
+      return hash === "#comment-root";
     };
 
     const dispatchFirstCommentLoadDone = (ok: boolean): void => {
@@ -2000,13 +2000,13 @@ const hasDirectusTarget = Boolean(moduleName && contentId);
     border-radius: clamp(1rem, 2vw, var(--radius-large));
   }
 
-  #directus-comment-root .custom-md img {
+  #comment-root .custom-md img {
     width: 30%;
     max-width: 30%;
     height: auto;
   }
 
-  #directus-comment-root .comment-node-child {
+  #comment-root .comment-node-child {
     margin-top: 0.75rem;
     margin-left: 2rem;
     padding-left: 1rem;

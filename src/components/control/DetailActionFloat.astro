@@ -460,12 +460,12 @@ const {
       });
 
       commentBtn?.addEventListener("click", () => {
-        const commentRoot = document.getElementById("directus-comment-root");
+        const commentRoot = document.getElementById("comment-root");
         if (commentRoot) {
           commentRoot.scrollIntoView({ behavior: "smooth", block: "start" });
           return;
         }
-        navigateToPage(`${window.location.pathname}#directus-comment-root`);
+        navigateToPage(`${window.location.pathname}#comment-root`);
       });
     });
   }
