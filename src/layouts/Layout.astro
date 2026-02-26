@@ -1,5 +1,5 @@
 ---
-import { ClientRouter } from 'astro:transitions';
+import { ClientRouter } from "astro:transitions";
 import Analytics from "@vercel/analytics/astro";
 import SpeedInsights from "@vercel/speed-insights/astro";
 import ConfigCarrier from "@components/ConfigCarrier.astro";
@@ -403,7 +403,10 @@ const bodyStyle = bodyFontFamily ? `font-family: ${bodyFontFamily};` : "";
           window.addEventListener("resize", applyDesktopSupportState, {
             passive: true,
           });
-          document.addEventListener("astro:page-load", applyDesktopSupportState);
+          document.addEventListener(
+            "astro:page-load",
+            applyDesktopSupportState,
+          );
           document.addEventListener(
             "astro:after-swap",
             applyDesktopSupportState,

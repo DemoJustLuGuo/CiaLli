@@ -321,14 +321,14 @@ window.CodeBlockCollapser = CodeBlockCollapser;
 window.codeBlockCollapser = codeBlockCollapser;
 
 // Astro View Transitions 页面切换钩子
-document.addEventListener('astro:page-load', () => {
+document.addEventListener("astro:page-load", () => {
     codeBlockCollapser.processedBlocks = new WeakSet();
     setTimeout(() => {
         codeBlockCollapser.setupCodeBlocks();
     }, 100);
 });
 
-document.addEventListener('astro:after-swap', () => {
+document.addEventListener("astro:after-swap", () => {
     codeBlockCollapser.processedBlocks = new WeakSet();
     setTimeout(() => {
         codeBlockCollapser.setupCodeBlocks();

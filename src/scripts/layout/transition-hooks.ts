@@ -205,7 +205,6 @@ export function setupTransitionIntentSource(
     let bannerToSpecAnimationStartedAt: number | null = null;
     let delayedPageViewTimerId: number | null = null;
     let didReplaceContentDuringVisit = false;
-    let shouldDelayBannerToSpecMoveUntilReplace = false;
     let didForceNavbarScrolledForBannerToSpec = false;
     let pendingBannerToSpecNewDocument: Document | null = null;
     let navigationInProgress = false;
@@ -271,7 +270,6 @@ export function setupTransitionIntentSource(
     }): void => {
         clearDelayedPageViewTimer();
         bannerToSpecAnimationStartedAt = null;
-        shouldDelayBannerToSpecMoveUntilReplace = false;
         releaseForcedNavbarScrolledState();
         const root = document.documentElement;
         root.classList.remove(BANNER_TO_SPEC_TRANSITION_CLASS);
@@ -351,74 +349,56 @@ export function setupTransitionIntentSource(
     });
 
     // ===== astro:before-preparation (replaces visit:start + link:click) =====
-    document.addEventListener(
-        "astro:before-preparation",
-        (event: Event) => {
-            const e = event as BeforePreparationEvent;
-            const targetPathname = normalizePathname(e.to.pathname);
+    document.addEventListener("astro:before-preparation", (event: Event) => {
+        const e = event as BeforePreparationEvent;
+        const targetPathname = normalizePathname(e.to.pathname);
 
-            navigationInProgress = true;
-            didReplaceContentDuringVisit = false;
-            forceResetEnterSkeleton();
-            setAwaitingReplaceState(true);
-            deps.cleanupFancybox();
-            pendingBannerToSpecRoutePath = null;
-            pendingSidebarProfilePatch = null;
-            pendingBannerToSpecNewDocument = null;
-            bannerToSpecAnimationStartedAt = null;
-            shouldDelayBannerToSpecMoveUntilReplace = false;
-            clearBannerToSpecTransitionVisualState();
+        navigationInProgress = true;
+        didReplaceContentDuringVisit = false;
+        forceResetEnterSkeleton();
+        setAwaitingReplaceState(true);
+        deps.cleanupFancybox();
+        pendingBannerToSpecRoutePath = null;
+        pendingSidebarProfilePatch = null;
+        pendingBannerToSpecNewDocument = null;
+        bannerToSpecAnimationStartedAt = null;
+        clearBannerToSpecTransitionVisualState();
 
-            // was link:click
-            document.documentElement.style.setProperty(
-                "--content-delay",
-                "0ms",
+        // was link:click
+        document.documentElement.style.setProperty("--content-delay", "0ms");
+
+        // Banner-to-spec detection
+        const isTargetHome = deps.pathsEqual(targetPathname, deps.url("/"));
+        const body = document.body;
+        const currentPathname = normalizePathname(window.location.pathname);
+        const currentIsHome =
+            deps.pathsEqual(currentPathname, deps.url("/")) ||
+            isCurrentHomeRoute(body);
+        const hasBannerWrapper = document.getElementById("banner-wrapper");
+        const shouldUseBannerToSpecTransition =
+            currentIsHome && hasBannerWrapper !== null && !isTargetHome;
+
+        if (shouldUseBannerToSpecTransition) {
+            pendingBannerToSpecRoutePath = targetPathname;
+            const root = document.documentElement;
+            // Initial shift calculation without newDocument (uses fallback values)
+            applyBannerToSpecShiftVariables(undefined, root);
+            root.style.setProperty(
+                BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
+                `${BANNER_TO_SPEC_TRANSITION_DURATION_MS}ms`,
             );
+            root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
+            root.classList.add(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
+            setPageHeightExtendVisible(true);
+        } else {
+            setPageHeightExtendVisible(false);
+        }
 
-            // Banner-to-spec detection
-            const isTargetHome = deps.pathsEqual(
-                targetPathname,
-                deps.url("/"),
-            );
-            const body = document.body;
-            const currentPathname = normalizePathname(
-                window.location.pathname,
-            );
-            const currentIsHome =
-                deps.pathsEqual(currentPathname, deps.url("/")) ||
-                isCurrentHomeRoute(body);
-            const hasBannerWrapper =
-                document.getElementById("banner-wrapper");
-            const shouldUseBannerToSpecTransition =
-                currentIsHome &&
-                hasBannerWrapper !== null &&
-                !isTargetHome;
-
-            if (shouldUseBannerToSpecTransition) {
-                pendingBannerToSpecRoutePath = targetPathname;
-                const root = document.documentElement;
-                // Initial shift calculation without newDocument (uses fallback values)
-                applyBannerToSpecShiftVariables(undefined, root);
-                root.style.setProperty(
-                    BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
-                    `${BANNER_TO_SPEC_TRANSITION_DURATION_MS}ms`,
-                );
-                root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
-                root.classList.add(
-                    BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS,
-                );
-                shouldDelayBannerToSpecMoveUntilReplace = true;
-                setPageHeightExtendVisible(true);
-            } else {
-                setPageHeightExtendVisible(false);
-            }
-
-            const toc = document.getElementById("toc-wrapper");
-            if (toc) {
-                toc.classList.add("toc-not-ready");
-            }
-        },
-    );
+        const toc = document.getElementById("toc-wrapper");
+        if (toc) {
+            toc.classList.add("toc-not-ready");
+        }
+    });
 
     // ===== astro:before-swap (replaces before:content:replace + content:scroll + animation:out:start) =====
     document.addEventListener("astro:before-swap", (event: Event) => {
@@ -428,19 +408,15 @@ export function setupTransitionIntentSource(
 
         // ----- Sidebar preservation logic (was before:content:replace) -----
         pendingSidebarProfilePatch = null;
-        const currentSidebar =
-            document.querySelector<HTMLElement>("#sidebar");
-        const newSidebar =
-            newDocument.querySelector<HTMLElement>("#sidebar");
+        const currentSidebar = document.querySelector<HTMLElement>("#sidebar");
+        const newSidebar = newDocument.querySelector<HTMLElement>("#sidebar");
         let shouldPreserveSidebar = false;
 
         if (currentSidebar && newSidebar) {
-            const currentUid =
-                currentSidebar.getAttribute("data-sidebar-uid");
+            const currentUid = currentSidebar.getAttribute("data-sidebar-uid");
             const newUid = newSidebar.getAttribute("data-sidebar-uid");
             const currentLayoutKey =
-                currentSidebar.getAttribute("data-sidebar-layout-key") ||
-                "";
+                currentSidebar.getAttribute("data-sidebar-layout-key") || "";
             const newLayoutKey =
                 newSidebar.getAttribute("data-sidebar-layout-key") || "";
             const layoutComparable =
@@ -500,7 +476,7 @@ export function setupTransitionIntentSource(
             ? document.querySelector<HTMLElement>("#sidebar")
             : null;
         const savedScrollY = window.scrollY;
-        const suppressScroll = !!pendingBannerToSpecRoutePath;
+        const suppressScroll = Boolean(pendingBannerToSpecRoutePath);
 
         const originalSwap = e.swap;
         e.swap = () => {
@@ -508,8 +484,7 @@ export function setupTransitionIntentSource(
 
             // Restore preserved sidebar after default swap replaced everything
             if (savedSidebar) {
-                const newSidebarInDom =
-                    document.querySelector("#sidebar");
+                const newSidebarInDom = document.querySelector("#sidebar");
                 if (newSidebarInDom) {
                     newSidebarInDom.replaceWith(savedSidebar);
                 }
@@ -553,7 +528,6 @@ export function setupTransitionIntentSource(
 
         // Start banner-to-spec animation now that content is replaced
         if (pendingBannerToSpecRoutePath) {
-            shouldDelayBannerToSpecMoveUntilReplace = false;
             startBannerToSpecMoveTransition();
         }
     });
@@ -669,8 +643,7 @@ export function setupTransitionIntentSource(
     const doVisitEndCleanup = (): void => {
         navigationInProgress = false;
 
-        const shouldForceCleanupForAbortedVisit =
-            !didReplaceContentDuringVisit;
+        const shouldForceCleanupForAbortedVisit = !didReplaceContentDuringVisit;
         if (shouldForceCleanupForAbortedVisit) {
             forceResetEnterSkeleton();
         }

@@ -62,7 +62,7 @@ class ThemeOptimizer {
 
     setupTransitionHooks() {
         // Astro View Transitions 页面切换钩子
-        document.addEventListener('astro:page-load', () => {
+        document.addEventListener("astro:page-load", () => {
             setTimeout(() => {
                 this.observeCodeBlocks();
                 this.applyCodeBlockTransitionBehavior();
@@ -70,7 +70,7 @@ class ThemeOptimizer {
             }, 100);
         });
 
-        document.addEventListener('astro:after-swap', () => {
+        document.addEventListener("astro:after-swap", () => {
             setTimeout(() => {
                 this.applyCodeBlockTransitionBehavior();
                 this.forceApplyThemeTransitionStyles();

@@ -259,10 +259,7 @@
     setupMutationObserver();
 
     // 监听所有可能的页面切换事件
-    const events = [
-        "astro:page-load",
-        "astro:after-swap",
-    ];
+    const events = ["astro:page-load", "astro:after-swap"];
 
     for (let i = 0; i < events.length; i++) {
         ((eventName) => {

@@ -44,7 +44,7 @@ export default defineConfig({
 
     prefetch: {
         prefetchAll: false,
-        defaultStrategy: 'hover',
+        defaultStrategy: "hover",
     },
 
     integrations: [

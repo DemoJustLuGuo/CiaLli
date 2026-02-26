@@ -235,6 +235,7 @@ const hasCarousel =
 
       <script
         is:inline
+        data-astro-rerun
         define:vars={{
           desktopImages: bannerImages,
           position: siteConfig.banner.position,
@@ -424,10 +425,7 @@ const hasCarousel =
                       id="toc-inner-wrapper"
                       class="w-full max-h-[calc(100vh-10rem)] overflow-hidden"
                     >
-                      <div
-                        id="toc-container"
-                        class="w-full transition-fade"
-                      >
+                      <div id="toc-container" class="w-full transition-fade">
                         <TOC headings={headings} />
                       </div>
                     </div>

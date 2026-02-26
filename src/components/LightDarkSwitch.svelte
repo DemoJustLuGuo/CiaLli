@@ -46,10 +46,10 @@
     syncModeFromStorage();
 
     const handleSwap = () => requestAnimationFrame(syncModeFromStorage);
-    document.addEventListener('astro:after-swap', handleSwap);
+    document.addEventListener("astro:after-swap", handleSwap);
 
     return () => {
-      document.removeEventListener('astro:after-swap', handleSwap);
+      document.removeEventListener("astro:after-swap", handleSwap);
     };
   });
 </script>

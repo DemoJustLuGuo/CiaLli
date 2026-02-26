@@ -16,6 +16,7 @@ import { panelManager } from "@/utils/panel-manager.js";
 import { initSakura } from "@/utils/sakura-manager";
 import { pathsEqual, url } from "@/utils/url-utils";
 import {
+    resetBannerCarousel,
     setupBannerRuntime,
     showBanner,
     updateBannerCarouselState,
@@ -282,4 +283,20 @@ const runDynamicPageInit = async (): Promise<void> => {
 };
 
 void runDynamicPageInit();
-document.addEventListener("astro:after-swap", () => void runDynamicPageInit());
+document.addEventListener("astro:after-swap", () => {
+    resetBannerCarousel();
+
+    let extendPx = Math.floor(
+        window.innerHeight * (BANNER_HEIGHT_EXTEND / 100),
+    );
+    extendPx = extendPx - (extendPx % 4);
+    document.documentElement.style.setProperty(
+        "--banner-height-extend",
+        `${extendPx}px`,
+    );
+
+    void runDynamicPageInit();
+});
+document.addEventListener("astro:page-load", () => {
+    showBanner();
+});
