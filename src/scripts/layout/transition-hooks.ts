@@ -21,6 +21,7 @@ const BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS =
 const BANNER_TO_SPEC_NAVBAR_SYNC_CLASS = "layout-banner-to-spec-navbar-sync";
 const BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS =
     "layout-banner-to-spec-navbar-commit-freeze";
+const SPEC_TO_BANNER_TRANSITION_CLASS = "layout-spec-to-banner-transition";
 const BANNER_TO_SPEC_SHIFT_VAR = "--layout-banner-route-up-shift";
 const BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR =
     "--layout-banner-route-banner-extra-shift";
@@ -207,6 +208,7 @@ export function setupTransitionIntentSource(
     let didReplaceContentDuringVisit = false;
     let didForceNavbarScrolledForBannerToSpec = false;
     let pendingBannerToSpecNewDocument: Document | null = null;
+    let pendingSpecToBannerRoutePath: string | null = null;
     let navigationInProgress = false;
 
     const setPageHeightExtendVisible = (visible: boolean): void => {
@@ -279,6 +281,7 @@ export function setupTransitionIntentSource(
         if (!options?.preserveNavbarCommitFreeze) {
             root.classList.remove(BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS);
         }
+        root.classList.remove(SPEC_TO_BANNER_TRANSITION_CLASS);
         root.style.removeProperty(BANNER_TO_SPEC_SHIFT_VAR);
         root.style.removeProperty(BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR);
         root.style.removeProperty(BANNER_TO_SPEC_TRANSITION_DURATION_VAR);
@@ -366,6 +369,7 @@ export function setupTransitionIntentSource(
         pendingBannerToSpecRoutePath = null;
         pendingSidebarProfilePatch = null;
         pendingBannerToSpecNewDocument = null;
+        pendingSpecToBannerRoutePath = null;
         bannerToSpecAnimationStartedAt = null;
         clearBannerToSpecTransitionVisualState();
 
@@ -392,16 +396,27 @@ export function setupTransitionIntentSource(
                 BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
                 `${BANNER_TO_SPEC_TRANSITION_DURATION_MS}ms`,
             );
-            // 设置旧页面 .main-panel-wrapper 的命名 VT（VT 截图前必须已设置）
-            const oldMainPanel = document.querySelector<HTMLElement>('.main-panel-wrapper');
-            if (oldMainPanel) {
-                oldMainPanel.style.setProperty('view-transition-name', 'main-panel');
-            }
             root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
             root.classList.add(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
             setPageHeightExtendVisible(true);
         } else {
             setPageHeightExtendVisible(false);
+        }
+
+        // Spec-to-banner detection
+        const shouldUseSpecToBannerTransition = !currentIsHome && isTargetHome;
+        if (shouldUseSpecToBannerTransition) {
+            pendingSpecToBannerRoutePath = targetPathname;
+            const root = document.documentElement;
+            root.classList.add(SPEC_TO_BANNER_TRANSITION_CLASS);
+        }
+
+        // 任意方向的位移过渡均需设置旧页面命名 VT（VT 截图前必须已设置）
+        if (shouldUseBannerToSpecTransition || shouldUseSpecToBannerTransition) {
+            const oldMainPanel = document.querySelector<HTMLElement>('.main-panel-wrapper');
+            if (oldMainPanel) {
+                oldMainPanel.style.setProperty('view-transition-name', 'main-panel');
+            }
         }
 
         const toc = document.getElementById("toc-wrapper");
@@ -506,7 +521,7 @@ export function setupTransitionIntentSource(
             }
 
             // swap 后立即给新页面 .main-panel-wrapper 设置命名 VT
-            if (pendingBannerToSpecRoutePath) {
+            if (pendingBannerToSpecRoutePath || pendingSpecToBannerRoutePath) {
                 const newMainPanel = document.querySelector<HTMLElement>('.main-panel-wrapper');
                 if (newMainPanel) {
                     newMainPanel.style.setProperty('view-transition-name', 'main-panel');
@@ -676,6 +691,7 @@ export function setupTransitionIntentSource(
             pendingBannerToSpecRoutePath = null;
             pendingSidebarProfilePatch = null;
             pendingBannerToSpecNewDocument = null;
+            pendingSpecToBannerRoutePath = null;
             clearBannerToSpecTransitionVisualState();
         }
 
