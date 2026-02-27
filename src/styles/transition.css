@@ -147,6 +147,28 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* Banner-to-spec 过渡：抑制 root 级 VT 淡入淡出，改用 main-panel 命名 VT 位移动画 */
+html.layout-banner-to-spec-transition::view-transition-old(root),
+html.layout-banner-to-spec-transition::view-transition-new(root) {
+  animation: none;
+}
+
+/* main-panel 命名 VT：浏览器自动 FLIP 位移动画（从 65vh → 5.5rem）*/
+html.layout-banner-to-spec-transition::view-transition-group(main-panel) {
+  animation-duration: 1200ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html.layout-banner-to-spec-transition::view-transition-old(main-panel) {
+  animation-duration: 1200ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html.layout-banner-to-spec-transition::view-transition-new(main-panel) {
+  animation-duration: 1200ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 /* 减少动画的用户偏好设置 */
 @media (prefers-reduced-motion: reduce) {
   .transition-main,
@@ -162,6 +184,11 @@
 
   ::view-transition-old(root),
   ::view-transition-new(root) {
+    animation-duration: 0.01ms !important;
+  }
+
+  html.layout-banner-to-spec-transition::view-transition-old(main-panel),
+  html.layout-banner-to-spec-transition::view-transition-new(main-panel) {
     animation-duration: 0.01ms !important;
   }
 }

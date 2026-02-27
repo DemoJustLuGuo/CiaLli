@@ -27,7 +27,7 @@ const BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR =
 const BANNER_TO_SPEC_TRANSITION_DURATION_VAR =
     "--layout-banner-route-transition-duration";
 const ENTER_SKELETON_AWAITING_REPLACE_CLASS = "enter-skeleton-awaiting-replace";
-const BANNER_TO_SPEC_TRANSITION_DURATION_MS = 920;
+const BANNER_TO_SPEC_TRANSITION_DURATION_MS = 1200;
 const COLLAPSED_MAIN_PANEL_TOP = "5.5rem";
 const SIDEBAR_OVERSHOOT_TOLERANCE_PX = 0.75;
 
@@ -283,6 +283,11 @@ export function setupTransitionIntentSource(
         root.style.removeProperty(BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR);
         root.style.removeProperty(BANNER_TO_SPEC_TRANSITION_DURATION_VAR);
         setPageHeightExtendVisible(false);
+        // 清理命名 VT，防止影响后续导航
+        const mainPanel = document.querySelector<HTMLElement>('.main-panel-wrapper');
+        if (mainPanel) {
+            mainPanel.style.removeProperty('view-transition-name');
+        }
     };
 
     const startBannerToSpecMoveTransition = (): void => {
@@ -387,6 +392,11 @@ export function setupTransitionIntentSource(
                 BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
                 `${BANNER_TO_SPEC_TRANSITION_DURATION_MS}ms`,
             );
+            // 设置旧页面 .main-panel-wrapper 的命名 VT（VT 截图前必须已设置）
+            const oldMainPanel = document.querySelector<HTMLElement>('.main-panel-wrapper');
+            if (oldMainPanel) {
+                oldMainPanel.style.setProperty('view-transition-name', 'main-panel');
+            }
             root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
             root.classList.add(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
             setPageHeightExtendVisible(true);
@@ -493,6 +503,14 @@ export function setupTransitionIntentSource(
             // Suppress scroll reset during banner-to-spec transitions
             if (suppressScroll) {
                 window.scrollTo(0, savedScrollY);
+            }
+
+            // swap 后立即给新页面 .main-panel-wrapper 设置命名 VT
+            if (pendingBannerToSpecRoutePath) {
+                const newMainPanel = document.querySelector<HTMLElement>('.main-panel-wrapper');
+                if (newMainPanel) {
+                    newMainPanel.style.setProperty('view-transition-name', 'main-panel');
+                }
             }
         };
     });
