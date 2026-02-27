@@ -419,11 +419,12 @@ const hasCarousel =
               <>
                 <RightSideBar headings={headings} />
                 {shouldRenderDedicatedPostToc && (
-                  <div id="toc-wrapper" class="w-full transition-swup-fade">
-                    <div
-                      id="toc-inner-wrapper"
-                      class="w-full max-h-[calc(100vh-10rem)] overflow-hidden"
-                    >
+                  <div
+                    id="toc-wrapper"
+                    data-post-detail-toc="1"
+                    class="w-full transition-swup-fade"
+                  >
+                    <div id="toc-inner-wrapper" class="w-full">
                       <div
                         id="toc-container"
                         class="w-full transition-swup-fade"
@@ -435,11 +436,12 @@ const hasCarousel =
                 )}
               </>
             ) : shouldRenderDedicatedPostToc ? (
-              <div id="toc-wrapper" class="w-full transition-swup-fade">
-                <div
-                  id="toc-inner-wrapper"
-                  class="w-full max-h-[calc(100vh-10rem)] overflow-hidden"
-                >
+              <div
+                id="toc-wrapper"
+                data-post-detail-toc="1"
+                class="w-full transition-swup-fade"
+              >
+                <div id="toc-inner-wrapper" class="w-full">
                   <div id="toc-container" class="w-full transition-swup-fade">
                     <TOC headings={headings} />
                   </div>
@@ -725,8 +727,9 @@ const hasCarousel =
   }
 
   :global(#right-sidebar-slot.right-sidebar-toc-fixed) {
+    --right-sidebar-sticky-top: 5.5rem;
     position: sticky;
-    top: 5.5rem;
+    top: var(--right-sidebar-sticky-top);
     align-self: start;
   }
 
@@ -766,6 +769,17 @@ const hasCarousel =
   }
 
   #toc-inner-wrapper {
+    /* 右侧文章 TOC 的可视高度：顶部 sticky 偏移到底部返回顶部按钮上沿 */
+    --toc-stop-above-back-top: calc(
+      var(--back-to-top-bottom, 10rem) + var(--right-float-size, 3.75rem)
+    );
+    --post-detail-toc-max-height: max(
+      0px,
+      calc(
+        100vh - var(--right-sidebar-sticky-top, 5.5rem) -
+          var(--toc-stop-above-back-top)
+      )
+    );
     transition:
       top var(--layout-mode-transition-duration)
         var(--layout-mode-transition-easing),
@@ -812,7 +826,13 @@ const hasCarousel =
   body[data-layout-mode="none"] #toc-inner-wrapper,
   body[data-layout-mode="collapsed"] #toc-inner-wrapper {
     top: 5.5rem !important;
-    max-height: calc(100vh - 8rem) !important;
+    --post-detail-toc-max-height: max(
+      0px,
+      calc(
+        100vh - var(--right-sidebar-sticky-top, 5.5rem) -
+          var(--toc-stop-above-back-top)
+      )
+    ) !important;
   }
 
   .waves {
