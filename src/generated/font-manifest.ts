@@ -31,7 +31,7 @@ export const generatedFontManifest: GeneratedFontManifest = {
       "fetchpriority": "high"
     },
     {
-      "href": "/assets/font/cjk-core.447aca0b715c.woff2",
+      "href": "/assets/font/cjk-core.9a735a321812.woff2",
       "type": "font/woff2",
       "crossorigin": "anonymous",
       "fetchpriority": "high"

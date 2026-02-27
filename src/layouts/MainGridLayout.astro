@@ -526,7 +526,7 @@ const hasCarousel =
   :root {
     --layout-mode-transition-duration: 0.98s;
     --layout-mode-transition-easing: cubic-bezier(0.16, 1, 0.4, 1);
-    --layout-banner-route-transition-duration: 1200ms;
+    --layout-banner-route-transition-duration: 920ms;
     --layout-banner-route-transition-easing: cubic-bezier(0.22, 1, 0.36, 1);
   }
 
@@ -590,12 +590,12 @@ const hasCarousel =
   :global(html.layout-banner-to-spec-transition) #banner-wrapper,
   :global(html.layout-banner-to-spec-transition) .main-panel-wrapper {
     transition:
-      transform var(--layout-banner-route-transition-duration, 1200ms)
+      transform var(--layout-banner-route-transition-duration, 920ms)
         var(
           --layout-banner-route-transition-easing,
           cubic-bezier(0.22, 1, 0.36, 1)
         ),
-      opacity var(--layout-banner-route-transition-duration, 1200ms)
+      opacity var(--layout-banner-route-transition-duration, 920ms)
         var(
           --layout-banner-route-transition-easing,
           cubic-bezier(0.22, 1, 0.36, 1)
@@ -626,7 +626,7 @@ const hasCarousel =
       border-radius, background-color, box-shadow, backdrop-filter !important;
     transition-duration: var(
       --layout-banner-route-transition-duration,
-      1200ms
+      920ms
     ) !important;
     transition-timing-function: var(
       --layout-banner-route-transition-easing,
@@ -645,7 +645,7 @@ const hasCarousel =
   ) {
     transition-duration: var(
       --layout-banner-route-transition-duration,
-      1200ms
+      920ms
     ) !important;
     transition-timing-function: var(
       --layout-banner-route-transition-easing,

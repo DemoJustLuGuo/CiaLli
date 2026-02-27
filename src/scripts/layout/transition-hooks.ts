@@ -21,16 +21,40 @@ const BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS =
 const BANNER_TO_SPEC_NAVBAR_SYNC_CLASS = "layout-banner-to-spec-navbar-sync";
 const BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS =
     "layout-banner-to-spec-navbar-commit-freeze";
-const SPEC_TO_BANNER_TRANSITION_CLASS = "layout-spec-to-banner-transition";
 const BANNER_TO_SPEC_SHIFT_VAR = "--layout-banner-route-up-shift";
 const BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR =
     "--layout-banner-route-banner-extra-shift";
 const BANNER_TO_SPEC_TRANSITION_DURATION_VAR =
     "--layout-banner-route-transition-duration";
+const BANNER_TO_SPEC_MAIN_PANEL_VT_NAME = "banner-route-main-panel";
+const BANNER_TO_SPEC_BANNER_VT_NAME = "banner-route-banner";
 const ENTER_SKELETON_AWAITING_REPLACE_CLASS = "enter-skeleton-awaiting-replace";
-const BANNER_TO_SPEC_TRANSITION_DURATION_MS = 1200;
+const BANNER_TO_SPEC_TRANSITION_DURATION_MS = 920;
 const COLLAPSED_MAIN_PANEL_TOP = "5.5rem";
 const SIDEBAR_OVERSHOOT_TOLERANCE_PX = 0.75;
+const ROOT_RUNTIME_CLASSES_TO_PRESERVE = [
+    "dark",
+    "is-theme-transitioning",
+    "use-view-transition",
+    ENTER_SKELETON_AWAITING_REPLACE_CLASS,
+    BANNER_TO_SPEC_TRANSITION_CLASS,
+    BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS,
+    BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS,
+    BANNER_TO_SPEC_NAVBAR_SYNC_CLASS,
+    BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS,
+] as const;
+const ROOT_RUNTIME_STYLE_PROPERTIES_TO_PRESERVE = [
+    "font-size",
+    "--hue",
+    "--banner-height-extend",
+    BANNER_TO_SPEC_SHIFT_VAR,
+    BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR,
+    BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
+] as const;
+const ROOT_RUNTIME_DATA_ATTRIBUTES_TO_PRESERVE = [
+    "data-desktop-unsupported",
+    "data-desktop-force-browse",
+] as const;
 
 // Astro View Transitions event types
 type BeforePreparationEvent = Event & {
@@ -181,6 +205,47 @@ function stripOnloadAnimationClasses(scope: HTMLElement): void {
     });
 }
 
+function setBannerToSpecViewTransitionNames(scope: ParentNode): void {
+    const mainPanel = scope.querySelector<HTMLElement>(".main-panel-wrapper");
+    if (mainPanel) {
+        mainPanel.style.setProperty(
+            "view-transition-name",
+            BANNER_TO_SPEC_MAIN_PANEL_VT_NAME,
+        );
+    }
+
+    const bannerWrapper = scope.querySelector<HTMLElement>("#banner-wrapper");
+    if (bannerWrapper) {
+        bannerWrapper.style.setProperty(
+            "view-transition-name",
+            BANNER_TO_SPEC_BANNER_VT_NAME,
+        );
+    }
+}
+
+function clearBannerToSpecViewTransitionNames(scope: ParentNode): void {
+    const mainPanel = scope.querySelector<HTMLElement>(".main-panel-wrapper");
+    if (mainPanel) {
+        mainPanel.style.removeProperty("view-transition-name");
+    }
+
+    const bannerWrapper = scope.querySelector<HTMLElement>("#banner-wrapper");
+    if (bannerWrapper) {
+        bannerWrapper.style.removeProperty("view-transition-name");
+    }
+}
+
+function freezeSpecLayoutStateForHomeDocument(): void {
+    const body = document.body;
+    body.dataset.layoutMode = "none";
+    body.dataset.routeHome = "false";
+    body.classList.remove("lg:is-home");
+    body.classList.remove("enable-banner");
+    body.classList.remove("scroll-collapsed-banner");
+    body.classList.add("no-banner-mode");
+    body.classList.add("waves-paused");
+}
+
 type TransitionIntentSourceDependencies = {
     controller: LayoutController;
     initFancybox: () => Promise<void>;
@@ -208,8 +273,62 @@ export function setupTransitionIntentSource(
     let didReplaceContentDuringVisit = false;
     let didForceNavbarScrolledForBannerToSpec = false;
     let pendingBannerToSpecNewDocument: Document | null = null;
-    let pendingSpecToBannerRoutePath: string | null = null;
+    let pendingSpecToBannerFreeze = false;
     let navigationInProgress = false;
+
+    const resolveExpectedThemeState = (): {
+        isDark: boolean;
+        codeTheme: "github-dark" | "github-light";
+    } => {
+        const storedTheme = localStorage.getItem("theme") || deps.defaultTheme;
+        const isDark = storedTheme === deps.darkMode;
+        return {
+            isDark,
+            codeTheme: isDark ? "github-dark" : "github-light",
+        };
+    };
+
+    const applyThemeStateToRoot = (
+        root: HTMLElement,
+        state: { isDark: boolean; codeTheme: "github-dark" | "github-light" },
+    ): void => {
+        root.classList.toggle("dark", state.isDark);
+        root.setAttribute("data-theme", state.codeTheme);
+    };
+
+    const syncRootRuntimeStateToIncomingDocument = (
+        newDocument: Document,
+    ): void => {
+        const currentRoot = document.documentElement;
+        const incomingRoot = newDocument.documentElement;
+
+        // 在 root attributes swap 前，先把当前运行态注入新文档，
+        // 避免导航期间回落到 SSR 默认值导致亮暗闪烁和字号抖动
+        ROOT_RUNTIME_CLASSES_TO_PRESERVE.forEach((className) => {
+            incomingRoot.classList.toggle(
+                className,
+                currentRoot.classList.contains(className),
+            );
+        });
+        ROOT_RUNTIME_STYLE_PROPERTIES_TO_PRESERVE.forEach((propertyName) => {
+            const value = currentRoot.style.getPropertyValue(propertyName);
+            if (value.trim().length > 0) {
+                incomingRoot.style.setProperty(propertyName, value);
+                return;
+            }
+            incomingRoot.style.removeProperty(propertyName);
+        });
+        ROOT_RUNTIME_DATA_ATTRIBUTES_TO_PRESERVE.forEach((attributeName) => {
+            const value = currentRoot.getAttribute(attributeName);
+            if (typeof value === "string") {
+                incomingRoot.setAttribute(attributeName, value);
+                return;
+            }
+            incomingRoot.removeAttribute(attributeName);
+        });
+
+        applyThemeStateToRoot(incomingRoot, resolveExpectedThemeState());
+    };
 
     const setPageHeightExtendVisible = (visible: boolean): void => {
         const heightExtend = document.getElementById("page-height-extend");
@@ -281,18 +400,11 @@ export function setupTransitionIntentSource(
         if (!options?.preserveNavbarCommitFreeze) {
             root.classList.remove(BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS);
         }
-        root.classList.remove(SPEC_TO_BANNER_TRANSITION_CLASS);
         root.style.removeProperty(BANNER_TO_SPEC_SHIFT_VAR);
         root.style.removeProperty(BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR);
         root.style.removeProperty(BANNER_TO_SPEC_TRANSITION_DURATION_VAR);
         setPageHeightExtendVisible(false);
-        // 清理命名 VT，防止影响后续导航
-        const mainPanel = document.querySelector<HTMLElement>(
-            ".main-panel-wrapper",
-        );
-        if (mainPanel) {
-            mainPanel.style.removeProperty("view-transition-name");
-        }
+        clearBannerToSpecViewTransitionNames(document);
     };
 
     const startBannerToSpecMoveTransition = (): void => {
@@ -371,7 +483,7 @@ export function setupTransitionIntentSource(
         pendingBannerToSpecRoutePath = null;
         pendingSidebarProfilePatch = null;
         pendingBannerToSpecNewDocument = null;
-        pendingSpecToBannerRoutePath = null;
+        pendingSpecToBannerFreeze = false;
         bannerToSpecAnimationStartedAt = null;
         clearBannerToSpecTransitionVisualState();
 
@@ -400,34 +512,15 @@ export function setupTransitionIntentSource(
             );
             root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
             root.classList.add(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
+            setBannerToSpecViewTransitionNames(document);
             setPageHeightExtendVisible(true);
         } else {
             setPageHeightExtendVisible(false);
         }
 
-        // Spec-to-banner detection
-        const shouldUseSpecToBannerTransition = !currentIsHome && isTargetHome;
-        if (shouldUseSpecToBannerTransition) {
-            pendingSpecToBannerRoutePath = targetPathname;
-            const root = document.documentElement;
-            root.classList.add(SPEC_TO_BANNER_TRANSITION_CLASS);
-        }
-
-        // 任意方向的位移过渡均需设置旧页面命名 VT（VT 截图前必须已设置）
-        if (
-            shouldUseBannerToSpecTransition ||
-            shouldUseSpecToBannerTransition
-        ) {
-            const oldMainPanel = document.querySelector<HTMLElement>(
-                ".main-panel-wrapper",
-            );
-            if (oldMainPanel) {
-                oldMainPanel.style.setProperty(
-                    "view-transition-name",
-                    "main-panel",
-                );
-            }
-        }
+        // Spec-to-banner: Astro 会在 swap 时直接带入首页 SSR 的 banner 布局，
+        // 需要先冻结为 spec 布局，等 route commit 后再切到 banner，才能恢复原有回场动画
+        pendingSpecToBannerFreeze = !currentIsHome && isTargetHome;
 
         const toc = document.getElementById("toc-wrapper");
         if (toc) {
@@ -440,6 +533,8 @@ export function setupTransitionIntentSource(
         const e = event as BeforeSwapEvent;
         const newDocument = e.newDocument;
         pendingBannerToSpecNewDocument = newDocument;
+
+        syncRootRuntimeStateToIncomingDocument(newDocument);
 
         // ----- Sidebar preservation logic (was before:content:replace) -----
         pendingSidebarProfilePatch = null;
@@ -530,17 +625,12 @@ export function setupTransitionIntentSource(
                 window.scrollTo(0, savedScrollY);
             }
 
-            // swap 后立即给新页面 .main-panel-wrapper 设置命名 VT
-            if (pendingBannerToSpecRoutePath || pendingSpecToBannerRoutePath) {
-                const newMainPanel = document.querySelector<HTMLElement>(
-                    ".main-panel-wrapper",
-                );
-                if (newMainPanel) {
-                    newMainPanel.style.setProperty(
-                        "view-transition-name",
-                        "main-panel",
-                    );
-                }
+            if (pendingBannerToSpecRoutePath) {
+                setBannerToSpecViewTransitionNames(document);
+            }
+
+            if (pendingSpecToBannerFreeze) {
+                freezeSpecLayoutStateForHomeDocument();
             }
         };
     });
@@ -630,32 +720,16 @@ export function setupTransitionIntentSource(
                 });
             }
 
-            // Theme sync
-            const storedTheme =
-                localStorage.getItem("theme") || deps.defaultTheme;
-            const isDark = storedTheme === deps.darkMode;
-            const expectedTheme = isDark ? "github-dark" : "github-light";
-            const currentTheme =
-                document.documentElement.getAttribute("data-theme");
-            const hasDarkClass =
-                document.documentElement.classList.contains("dark");
-
-            if (currentTheme !== expectedTheme || hasDarkClass !== isDark) {
-                requestAnimationFrame(() => {
-                    if (currentTheme !== expectedTheme) {
-                        document.documentElement.setAttribute(
-                            "data-theme",
-                            expectedTheme,
-                        );
-                    }
-                    if (hasDarkClass !== isDark) {
-                        if (isDark) {
-                            document.documentElement.classList.add("dark");
-                        } else {
-                            document.documentElement.classList.remove("dark");
-                        }
-                    }
-                });
+            // 兜底同步主题，防止历史页面或异常导航留下脏状态
+            const expectedThemeState = resolveExpectedThemeState();
+            const currentRoot = document.documentElement;
+            const currentCodeTheme = currentRoot.getAttribute("data-theme");
+            const hasDarkClass = currentRoot.classList.contains("dark");
+            if (
+                currentCodeTheme !== expectedThemeState.codeTheme ||
+                hasDarkClass !== expectedThemeState.isDark
+            ) {
+                applyThemeStateToRoot(currentRoot, expectedThemeState);
             }
 
             window.setTimeout(() => {
@@ -706,7 +780,7 @@ export function setupTransitionIntentSource(
             pendingBannerToSpecRoutePath = null;
             pendingSidebarProfilePatch = null;
             pendingBannerToSpecNewDocument = null;
-            pendingSpecToBannerRoutePath = null;
+            pendingSpecToBannerFreeze = false;
             clearBannerToSpecTransitionVisualState();
         }
 

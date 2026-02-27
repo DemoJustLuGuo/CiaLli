@@ -1,29 +1,36 @@
 /* Page transition animations - View Transitions API */
 
-/* View Transition API animations */
-::view-transition-old(root) {
-  animation: vt-fade-out 300ms cubic-bezier(0.55, 0.055, 0.675, 0.19) both;
+html:not(.is-theme-transitioning)::view-transition-group(root) {
+  animation-duration: 300ms;
 }
 
-::view-transition-new(root) {
-  animation: vt-fade-in 300ms cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+html:not(.is-theme-transitioning)::view-transition-old(root) {
+  animation: vt-slide-out 300ms cubic-bezier(0.55, 0.055, 0.675, 0.19) both;
 }
 
-@keyframes vt-fade-out {
+html:not(.is-theme-transitioning)::view-transition-new(root) {
+  animation: vt-slide-in 300ms cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+@keyframes vt-slide-out {
   from {
     opacity: 1;
+    transform: translateY(0) translateX(0);
   }
   to {
     opacity: 0;
+    transform: translateY(-1rem) translateX(-0.5rem);
   }
 }
 
-@keyframes vt-fade-in {
+@keyframes vt-slide-in {
   from {
     opacity: 0;
+    transform: translateY(1.5rem) translateX(0.5rem);
   }
   to {
     opacity: 1;
+    transform: translateY(0) translateX(0);
   }
 }
 
@@ -147,46 +154,24 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* Banner-to-spec 过渡：抑制 root 级 VT 淡入淡出，改用 main-panel 命名 VT 位移动画 */
+/* Banner-to-spec 过渡：完全抑制 root VT，改由布局层实时位移联动 */
+html.layout-banner-to-spec-transition::view-transition-group(root),
 html.layout-banner-to-spec-transition::view-transition-old(root),
 html.layout-banner-to-spec-transition::view-transition-new(root) {
   animation: none;
 }
 
-/* main-panel 命名 VT：浏览器自动 FLIP 位移动画（从 65vh → 5.5rem）*/
-html.layout-banner-to-spec-transition::view-transition-group(main-panel) {
-  animation-duration: 1200ms;
+html.layout-banner-to-spec-transition::view-transition-group(banner-route-main-panel),
+html.layout-banner-to-spec-transition::view-transition-group(banner-route-banner) {
+  animation-duration: 920ms;
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-html.layout-banner-to-spec-transition::view-transition-old(main-panel) {
-  animation-duration: 1200ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-html.layout-banner-to-spec-transition::view-transition-new(main-panel) {
-  animation-duration: 1200ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* Spec-to-banner 过渡：抑制 root VT 淡入淡出，启用 main-panel 命名 VT 位移动画 */
-html.layout-spec-to-banner-transition::view-transition-old(root),
-html.layout-spec-to-banner-transition::view-transition-new(root) {
-  animation: none;
-}
-
-html.layout-spec-to-banner-transition::view-transition-group(main-panel) {
-  animation-duration: 1200ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-html.layout-spec-to-banner-transition::view-transition-old(main-panel) {
-  animation-duration: 1200ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-html.layout-spec-to-banner-transition::view-transition-new(main-panel) {
-  animation-duration: 1200ms;
+html.layout-banner-to-spec-transition::view-transition-old(banner-route-main-panel),
+html.layout-banner-to-spec-transition::view-transition-old(banner-route-banner),
+html.layout-banner-to-spec-transition::view-transition-new(banner-route-main-panel),
+html.layout-banner-to-spec-transition::view-transition-new(banner-route-banner) {
+  animation-duration: 920ms;
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -203,23 +188,9 @@ html.layout-spec-to-banner-transition::view-transition-new(main-panel) {
     transition-duration: 0.01ms !important;
   }
 
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation-duration: 0.01ms !important;
-  }
-
-  html.layout-banner-to-spec-transition::view-transition-old(main-panel),
-  html.layout-banner-to-spec-transition::view-transition-new(main-panel) {
-    animation-duration: 0.01ms !important;
-  }
-
-  html.layout-spec-to-banner-transition::view-transition-old(main-panel),
-  html.layout-spec-to-banner-transition::view-transition-new(main-panel) {
-    animation-duration: 0.01ms !important;
-  }
-
-  html.layout-banner-to-spec-transition::view-transition-group(main-panel),
-  html.layout-spec-to-banner-transition::view-transition-group(main-panel) {
+  html:not(.is-theme-transitioning)::view-transition-old(root),
+  html:not(.is-theme-transitioning)::view-transition-new(root),
+  html:not(.is-theme-transitioning)::view-transition-group(root) {
     animation-duration: 0.01ms !important;
   }
 }
