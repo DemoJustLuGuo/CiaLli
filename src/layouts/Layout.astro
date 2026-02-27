@@ -485,6 +485,34 @@ const bodyStyle = bodyFontFamily ? `font-family: ${bodyFontFamily};` : "";
     <meta name="twitter:description" content={description || pageTitle} />
     <meta name="viewport" content="width=device-width" />
     <meta name="cialli-csrf-token" content={csrfToken} />
+    <script is:inline>
+      (function bootstrapCsrfToken() {
+        const meta = document.querySelector('meta[name="cialli-csrf-token"]');
+        if (!(meta instanceof HTMLMetaElement) || meta.content) {
+          return;
+        }
+        void fetch("/api/auth/csrf", {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            Accept: "application/json",
+          },
+        })
+          .then((response) =>
+            response.ok ? response.json().catch(() => null) : null,
+          )
+          .then((data) => {
+            const token =
+              data && data.ok && typeof data.token === "string"
+                ? data.token
+                : "";
+            if (token) {
+              meta.content = token;
+            }
+          })
+          .catch(() => null);
+      })();
+    </script>
     <meta name="generator" content={Astro.generator} />
     {
       favicons.map((favicon) => (
