@@ -17,6 +17,7 @@ import {
     updateDirectusUser,
     updateOne,
 } from "@/server/directus/client";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import { badRequest } from "@/server/api/errors";
 import { fail, ok } from "@/server/api/response";
@@ -27,7 +28,7 @@ import {
     AdminUpdateUserSchema,
     AdminResetPasswordSchema,
 } from "@/server/api/schemas";
-import { invalidateOfficialSidebarCache } from "../public-data";
+import { invalidateOfficialSidebarCacheAsync } from "../public-data";
 import {
     cleanupOrphanDirectusFiles,
     collectUserOwnedFileIds,
@@ -41,7 +42,10 @@ import {
     parseRouteId,
     requireAdmin,
 } from "../shared";
-import { invalidateAuthorCache } from "../shared/author-cache";
+import {
+    invalidateAuthorCache,
+    invalidateAuthorCacheAsync,
+} from "../shared/author-cache";
 import {
     clearBlockingUserReferences,
     loadReferencedFilesByUser,
@@ -295,9 +299,14 @@ async function handleUserPatch(
             : Promise.resolve(permissions),
     ]);
 
-    invalidateAuthorCache(userId);
-    void cacheManager.invalidateByDomain("profile-viewer");
-    invalidateOfficialSidebarCache();
+    await awaitCacheInvalidations(
+        [
+            invalidateAuthorCacheAsync(userId),
+            cacheManager.invalidateByDomain("profile-viewer"),
+            invalidateOfficialSidebarCacheAsync(),
+        ],
+        { label: "admin/users#patch" },
+    );
     await applyAvatarFileChange(
         body as JsonObject,
         input,
@@ -369,8 +378,14 @@ async function handleUserDelete(
     await clearBlockingUserReferences(userId);
     await deleteDirectusUser(userId);
     await cleanupOrphanDirectusFiles(candidateFileIds);
-    invalidateAuthorCache(userId);
-    invalidateOfficialSidebarCache();
+    await awaitCacheInvalidations(
+        [
+            invalidateAuthorCacheAsync(userId),
+            cacheManager.invalidateByDomain("profile-viewer"),
+            invalidateOfficialSidebarCacheAsync(),
+        ],
+        { label: "admin/users#delete" },
+    );
     return ok({ id: userId, deleted: true });
 }
 

@@ -11,6 +11,7 @@ import {
 } from "@/server/markdown/render";
 import {
     countItems,
+    countItemsGroupedByField,
     createOne,
     deleteOne,
     readMany,
@@ -114,31 +115,40 @@ async function loadCommentLikeStats(
     commentIds: string[],
     viewerId: string | null,
 ): Promise<{ countMap: Map<string, number>; likedByViewer: Set<string> }> {
-    const countMap = new Map<string, number>();
     const likedByViewer = new Set<string>();
     if (commentIds.length === 0) {
-        return { countMap, likedByViewer };
+        return { countMap: new Map(), likedByViewer };
     }
 
     const likeField = resolveCommentLikeField(collection);
-    const likes = (await readMany(collection, {
+    // 评论点赞总数改为数据库聚合，避免把所有点赞明细拉到应用层再计数。
+    const countMap = await countItemsGroupedByField(collection, likeField, {
+        _and: [
+            { [likeField]: { _in: commentIds } },
+            { status: { _eq: "published" } },
+        ],
+    } as JsonObject);
+
+    if (!viewerId) {
+        return { countMap, likedByViewer };
+    }
+
+    const viewerLikes = (await readMany(collection, {
         filter: {
             _and: [
                 { [likeField]: { _in: commentIds } },
                 { status: { _eq: "published" } },
+                { user_id: { _eq: viewerId } },
             ],
         } as JsonObject,
-        fields: [likeField, "user_id"],
+        fields: [likeField],
+        // 仅查询当前查看者点赞关系，查询范围受当前页面 commentIds 限定。
         limit: -1,
     })) as Array<Record<string, unknown>>;
 
-    for (const like of likes) {
+    for (const like of viewerLikes) {
         const targetId = String(like[likeField] || "").trim();
-        if (!targetId) {
-            continue;
-        }
-        countMap.set(targetId, (countMap.get(targetId) || 0) + 1);
-        if (viewerId && String(like.user_id || "").trim() === viewerId) {
+        if (targetId) {
             likedByViewer.add(targetId);
         }
     }

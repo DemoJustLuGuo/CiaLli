@@ -6,12 +6,14 @@ import { getSessionUser } from "@/server/auth/session";
 import { buildDirectusAssetUrl } from "@/server/directus-auth";
 
 export const prerender = false;
+const AUTH_NO_STORE = "private, no-store";
 
 function json<T>(data: T, init?: ResponseInit): Response {
     return new Response(JSON.stringify(data), {
         ...init,
         headers: {
             "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": AUTH_NO_STORE,
             ...(init?.headers ?? {}),
         },
     });

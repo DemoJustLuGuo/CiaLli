@@ -43,6 +43,8 @@ type DirectusAssetQuery = Partial<
     Record<"width" | "height" | "fit" | "quality" | "format", string>
 >;
 
+type DirectusAggregateRow = Record<string, unknown>;
+
 const SAFE_DIARY_FIELDS = [
     "id",
     "short_id",
@@ -100,6 +102,14 @@ async function runDirectusRequest<T>(
     } catch (error) {
         throw toDirectusError(action, error);
     }
+}
+
+function parseAggregateCountValue(input: unknown): number {
+    if (typeof input === "number" && Number.isFinite(input)) {
+        return input;
+    }
+    const parsed = parseInt(String(input ?? "0"), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function assertNonSystemCollection(collection: keyof DirectusSchema): void {
@@ -190,10 +200,52 @@ export async function countItems<K extends keyof DirectusSchema>(
         },
     );
     const row = Array.isArray(result) ? result[0] : result;
-    const count = (row as Record<string, unknown>)?.count;
-    return typeof count === "number"
-        ? count
-        : parseInt(String(count ?? "0"), 10) || 0;
+    const count = (row as DirectusAggregateRow)?.count;
+    return parseAggregateCountValue(count);
+}
+
+/**
+ * 按字段分组统计数量，返回 <字段值, 数量> 的映射。
+ * 用于替代 limit=-1 全量拉取后在内存中计数的高开销路径。
+ */
+export async function countItemsGroupedByField<K extends keyof DirectusSchema>(
+    collection: K,
+    groupField: string,
+    filter?: JsonObject,
+): Promise<Map<string, number>> {
+    const result = await runDirectusRequest(
+        `按 ${groupField} 聚合统计集合 ${String(collection)} 总数`,
+        async () => {
+            return await getDirectusClient().request(
+                aggregate(
+                    collection as Exclude<K, "directus_users">,
+                    {
+                        aggregate: { count: "*" },
+                        groupBy: [groupField],
+                        query: filter ? { filter } : {},
+                    } as never,
+                ),
+            );
+        },
+    );
+
+    const rows = Array.isArray(result) ? result : [result];
+    const counter = new Map<string, number>();
+
+    for (const row of rows) {
+        const record = row as DirectusAggregateRow;
+        const groupValue = String(record[groupField] ?? "").trim();
+        if (!groupValue) {
+            continue;
+        }
+        const count = parseAggregateCountValue(record.count);
+        if (count <= 0) {
+            continue;
+        }
+        counter.set(groupValue, count);
+    }
+
+    return counter;
 }
 
 export async function createOne<K extends keyof DirectusSchema>(

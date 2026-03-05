@@ -203,11 +203,17 @@ async function fetchAuthorsForUsers(
     return result;
 }
 
-export function invalidateAuthorCache(userId: string): void {
+export async function invalidateAuthorCacheAsync(
+    userId: string,
+): Promise<void> {
     const id = String(userId || "").trim();
     if (id) {
-        void cacheManager.invalidate("author", id);
+        await cacheManager.invalidate("author", id);
     }
+}
+
+export function invalidateAuthorCache(userId: string): void {
+    void invalidateAuthorCacheAsync(userId);
 }
 
 export function invalidateAuthorCacheByUsers(userIds: string[]): void {

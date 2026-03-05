@@ -18,6 +18,7 @@ import {
     UpdateArticleSchema,
 } from "@/server/api/schemas";
 import type { UpdateArticleInput } from "@/server/api/schemas";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import { createWithShortId } from "@/server/utils/short-id";
 
@@ -191,9 +192,14 @@ async function handleMeArticlesCreate(
             coverTitle,
         );
     }
-    void cacheManager.invalidateByDomain("article-list");
-    void cacheManager.invalidateByDomain("article-public");
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("article-list"),
+            cacheManager.invalidateByDomain("article-public"),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "me/articles#create" },
+    );
     return ok({ item: { ...created, tags: safeCsv(created?.tags) } });
 }
 
@@ -348,10 +354,15 @@ async function handleMeArticlesPatch(
         access,
     );
 
-    void cacheManager.invalidateByDomain("article-list");
-    void cacheManager.invalidateByDomain("article-public");
-    void cacheManager.invalidate("article-detail", id);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("article-list"),
+            cacheManager.invalidateByDomain("article-public"),
+            cacheManager.invalidate("article-detail", id),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "me/articles#patch" },
+    );
     return ok({ item: { ...updated, tags: safeCsv(updated.tags) } });
 }
 
@@ -368,10 +379,15 @@ async function handleMeArticlesDelete(
     if (allFileIds.length > 0) {
         await cleanupOrphanDirectusFiles(allFileIds);
     }
-    void cacheManager.invalidateByDomain("article-list");
-    void cacheManager.invalidateByDomain("article-public");
-    void cacheManager.invalidate("article-detail", id);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("article-list"),
+            cacheManager.invalidateByDomain("article-public"),
+            cacheManager.invalidate("article-detail", id),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "me/articles#delete" },
+    );
     return ok({ id });
 }
 

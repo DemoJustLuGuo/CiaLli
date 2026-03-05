@@ -14,7 +14,7 @@ import { cacheManager } from "@/server/cache/manager";
 import { loadBangumiCollections } from "@/server/bangumi/service";
 import { decryptBangumiAccessToken } from "@/server/bangumi/token";
 import { normalizeBangumiId } from "@/server/bangumi/username";
-import { countItems, readMany } from "@/server/directus/client";
+import { countItemsGroupedByField, readMany } from "@/server/directus/client";
 import { buildPublicAssetUrl } from "@/server/directus-auth";
 
 import type { AuthorBundleItem } from "./shared/author-cache";
@@ -92,28 +92,13 @@ export async function fetchDiaryCommentCountMap(
     if (diaryIds.length === 0) {
         return new Map();
     }
-    const map = new Map<string, number>();
-    await Promise.all(
-        diaryIds.map(async (diaryId) => {
-            try {
-                const count = await countItems("app_diary_comments", {
-                    _and: [
-                        { diary_id: { _eq: diaryId } },
-                        { status: { _eq: "published" } },
-                        { is_public: { _eq: true } },
-                    ],
-                } as JsonObject);
-                map.set(diaryId, count);
-            } catch (error) {
-                console.warn(
-                    `[public-data] failed to load diary comment count: ${diaryId}`,
-                    error,
-                );
-                map.set(diaryId, 0);
-            }
-        }),
-    );
-    return map;
+    return await countItemsGroupedByField("app_diary_comments", "diary_id", {
+        _and: [
+            { diary_id: { _in: diaryIds } },
+            { status: { _eq: "published" } },
+            { is_public: { _eq: true } },
+        ],
+    } as JsonObject);
 }
 
 export async function fetchDiaryLikeCountMap(
@@ -122,27 +107,12 @@ export async function fetchDiaryLikeCountMap(
     if (diaryIds.length === 0) {
         return new Map();
     }
-    const map = new Map<string, number>();
-    await Promise.all(
-        diaryIds.map(async (diaryId) => {
-            try {
-                const count = await countItems("app_diary_likes", {
-                    _and: [
-                        { diary_id: { _eq: diaryId } },
-                        { status: { _eq: "published" } },
-                    ],
-                } as JsonObject);
-                map.set(diaryId, count);
-            } catch (error) {
-                console.warn(
-                    `[public-data] failed to load diary like count: ${diaryId}`,
-                    error,
-                );
-                map.set(diaryId, 0);
-            }
-        }),
-    );
-    return map;
+    return await countItemsGroupedByField("app_diary_likes", "diary_id", {
+        _and: [
+            { diary_id: { _in: diaryIds } },
+            { status: { _eq: "published" } },
+        ],
+    } as JsonObject);
 }
 
 // ---------------------------------------------------------------------------
@@ -297,8 +267,12 @@ export function buildOwnerData(opts: OwnerDataOptions): {
 // 官方 Sidebar 缓存
 // ---------------------------------------------------------------------------
 
+export async function invalidateOfficialSidebarCacheAsync(): Promise<void> {
+    await cacheManager.invalidate("sidebar", "official");
+}
+
 export function invalidateOfficialSidebarCache(): void {
-    void cacheManager.invalidate("sidebar", "official");
+    void invalidateOfficialSidebarCacheAsync();
 }
 
 export async function loadOfficialSidebarProfile(): Promise<SidebarProfileData> {

@@ -10,6 +10,7 @@ import {
     readOneById,
     updateOne,
 } from "@/server/directus/client";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import { fail, ok } from "@/server/api/response";
 import { parseJsonBody, parsePagination } from "@/server/api/utils";
@@ -140,9 +141,17 @@ export async function handleMeArticleLikes(
         }
 
         const likeCount = await getArticleLikeCount(articleId);
-        invalidateArticleInteractionAggregate(articleId);
-        invalidateArticleInteractionViewerState(articleId, access.user.id);
-        void cacheManager.invalidateByDomain("home-feed");
+        await awaitCacheInvalidations(
+            [
+                invalidateArticleInteractionAggregate(articleId),
+                invalidateArticleInteractionViewerState(
+                    articleId,
+                    access.user.id,
+                ),
+                cacheManager.invalidateByDomain("home-feed"),
+            ],
+            { label: "me/article-likes#toggle" },
+        );
         return ok({
             item,
             liked,
@@ -258,7 +267,10 @@ export async function handleMeDiaryLikes(
         }
 
         const likeCount = await getDiaryLikeCount(diaryId);
-        void cacheManager.invalidateByDomain("home-feed");
+        await awaitCacheInvalidations(
+            [cacheManager.invalidateByDomain("home-feed")],
+            { label: "me/diary-likes#toggle" },
+        );
         return ok({
             item,
             liked,

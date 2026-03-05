@@ -17,6 +17,8 @@ import {
 import { parseRouteId } from "../shared";
 
 type ModuleKey = "home" | "bangumi" | "diary" | "albums";
+const USER_HOME_PUBLIC_EDGE_CACHE_CONTROL =
+    "public, s-maxage=60, stale-while-revalidate=300";
 
 const VALID_MODULE_KEYS: ReadonlySet<string> = new Set<ModuleKey>([
     "home",
@@ -175,6 +177,23 @@ async function dispatchModule(
     return handleAlbumsModule(context, username, detailId, viewerId);
 }
 
+function applyUserHomeCachePolicy(
+    viewerId: string | null,
+    response: Response,
+): Response {
+    if (viewerId) {
+        response.headers.set("Cache-Control", "private, no-store");
+        return response;
+    }
+    if (response.ok && !response.headers.has("Cache-Control")) {
+        response.headers.set(
+            "Cache-Control",
+            USER_HOME_PUBLIC_EDGE_CACHE_CONTROL,
+        );
+    }
+    return response;
+}
+
 export async function handleUserHome(
     context: APIContext,
     segments: string[],
@@ -209,11 +228,12 @@ export async function handleUserHome(
     const viewerId = sessionUser?.id ?? null;
     const detailId = rawDetailId ?? "";
 
-    return dispatchModule(
+    const response = await dispatchModule(
         context,
         moduleKey as ModuleKey,
         username,
         detailId,
         viewerId,
     );
+    return applyUserHomeCachePolicy(viewerId, response);
 }

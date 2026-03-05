@@ -3,6 +3,7 @@ import type { APIContext } from "astro";
 import { assertCan, assertOwnerOrAdmin } from "@/server/auth/acl";
 import { createOne, readOneById, updateOne } from "@/server/directus/client";
 import { fail, ok } from "@/server/api/response";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import { parseJsonBody } from "@/server/api/utils";
 import { validateBody } from "@/server/api/validate";
@@ -102,9 +103,14 @@ async function handleArticleCommentPost(
         is_public: input.is_public,
         show_on_profile: input.show_on_profile,
     });
-    void cacheManager.invalidate("article-detail", articleId);
-    invalidateArticleInteractionAggregate(articleId);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidate("article-detail", articleId),
+            invalidateArticleInteractionAggregate(articleId),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "comments-article#create" },
+    );
     return ok({
         item: await renderCommentItem(created),
     });
@@ -142,9 +148,14 @@ async function handleArticleCommentPatch(
     const input = validateBody(UpdateCommentSchema, body);
     const payload = buildCommentUpdatePayload(input);
     const updated = await updateOne("app_article_comments", commentId, payload);
-    void cacheManager.invalidate("article-detail", comment.article_id);
-    invalidateArticleInteractionAggregate(comment.article_id);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidate("article-detail", comment.article_id),
+            invalidateArticleInteractionAggregate(comment.article_id),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "comments-article#patch" },
+    );
     return ok({
         item: await renderCommentItem(updated),
     });
@@ -166,9 +177,14 @@ async function handleArticleCommentDelete(
     assertOwnerOrAdmin(access, comment.author_id);
 
     await deleteCommentWithDescendants("app_article_comments", commentId);
-    void cacheManager.invalidate("article-detail", comment.article_id);
-    invalidateArticleInteractionAggregate(comment.article_id);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidate("article-detail", comment.article_id),
+            invalidateArticleInteractionAggregate(comment.article_id),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "comments-article#delete" },
+    );
     return ok({ id: commentId });
 }
 

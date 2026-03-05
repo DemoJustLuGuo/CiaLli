@@ -1,5 +1,5 @@
 import { safeCsv } from "@/server/api/v1/shared";
-import { readMany } from "@/server/directus/client";
+import { countItemsGroupedByField } from "@/server/directus/client";
 import { buildPublicAssetUrl } from "@/server/directus-auth";
 import type { JsonObject } from "@/types/json";
 import type { AppArticle, AppDiaryImage } from "@/types/app";
@@ -183,16 +183,9 @@ export async function fetchInteractionCountMap(
         andFilters.push({ date_created: { _gte: options.windowStartIso } });
     }
 
-    const rows = await readMany(collection, {
-        filter: { _and: andFilters } as JsonObject,
-        fields: [relationField],
-        limit: -1,
-    });
-
-    return buildCountMapByRelation(
-        rows as Array<Record<string, unknown>>,
-        relationField,
-    );
+    return await countItemsGroupedByField(collection, relationField, {
+        _and: andFilters,
+    } as JsonObject);
 }
 
 export function toFallbackAuthor(userId: string): {

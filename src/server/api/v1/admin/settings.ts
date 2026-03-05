@@ -10,6 +10,7 @@ import { createOne, readMany, updateOne } from "@/server/directus/client";
 import { fail, ok } from "@/server/api/response";
 import { parseJsonBody } from "@/server/api/utils";
 import { validateBody } from "@/server/api/validate";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import {
     AdminAboutPreviewSchema,
@@ -467,10 +468,15 @@ async function handleAdminAboutPatch(
         summary: input.summary,
         body_markdown: input.body_markdown,
     });
-    void cacheManager.invalidateByDomain("article-list");
-    void cacheManager.invalidateByDomain("article-public");
-    void cacheManager.invalidate("article-detail", ABOUT_ARTICLE_SLUG);
-    void cacheManager.invalidate("article-detail", about.id);
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("article-list"),
+            cacheManager.invalidateByDomain("article-public"),
+            cacheManager.invalidate("article-detail", ABOUT_ARTICLE_SLUG),
+            cacheManager.invalidate("article-detail", about.id),
+        ],
+        { label: "admin/settings#about" },
+    );
     return ok({
         about,
         updated_at: about.updated_at,

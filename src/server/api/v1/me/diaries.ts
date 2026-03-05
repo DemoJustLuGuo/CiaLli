@@ -21,6 +21,7 @@ import {
     UpdateDiaryImageSchema,
     UpdateDiarySchema,
 } from "@/server/api/schemas";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import { createWithShortId } from "@/server/utils/short-id";
 
@@ -49,12 +50,18 @@ function buildDiaryFileTitle(
     return `Diary ${normalizedShortId}-${String(index).padStart(2, "0")}`;
 }
 
-function invalidateDiaryDetailCache(id: string, shortId?: string | null): void {
-    void cacheManager.invalidate("diary-detail", id);
+function buildDiaryDetailInvalidationTasks(
+    id: string,
+    shortId?: string | null,
+): Array<Promise<void>> {
+    const tasks: Array<Promise<void>> = [
+        cacheManager.invalidate("diary-detail", id),
+    ];
     const normalizedShortId = String(shortId ?? "").trim();
     if (normalizedShortId) {
-        void cacheManager.invalidate("diary-detail", normalizedShortId);
+        tasks.push(cacheManager.invalidate("diary-detail", normalizedShortId));
     }
+    return tasks;
 }
 
 type OwnedDiaryRecord = JsonObject & {
@@ -192,8 +199,13 @@ async function handleDiaryCreate(
                 fields: [...DIARY_FIELDS],
             }),
     );
-    void cacheManager.invalidateByDomain("diary-list");
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("diary-list"),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "me/diaries#create" },
+    );
     return ok({ item: created });
 }
 
@@ -231,9 +243,14 @@ async function handleDiaryPatch(
     const updated = await updateOne("app_diaries", diaryId, payload, {
         fields: [...DIARY_FIELDS],
     });
-    void cacheManager.invalidateByDomain("diary-list");
-    void cacheManager.invalidateByDomain("home-feed");
-    invalidateDiaryDetailCache(diaryId, updated.short_id);
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("diary-list"),
+            cacheManager.invalidateByDomain("home-feed"),
+            ...buildDiaryDetailInvalidationTasks(diaryId, updated.short_id),
+        ],
+        { label: "me/diaries#patch" },
+    );
     return ok({ item: updated });
 }
 
@@ -244,9 +261,14 @@ async function handleDiaryDelete(
     const fileIds = await collectDiaryFileIds(diaryId);
     await deleteOne("app_diaries", diaryId);
     await cleanupOrphanDirectusFiles(fileIds);
-    void cacheManager.invalidateByDomain("diary-list");
-    void cacheManager.invalidateByDomain("home-feed");
-    invalidateDiaryDetailCache(diaryId, target.short_id);
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("diary-list"),
+            cacheManager.invalidateByDomain("home-feed"),
+            ...buildDiaryDetailInvalidationTasks(diaryId, target.short_id),
+        ],
+        { label: "me/diaries#delete" },
+    );
     return ok({ id: diaryId });
 }
 
@@ -340,8 +362,13 @@ async function handleDiaryImageCreate(
             buildDiaryFileTitle(diary.short_id, created.sort),
         );
     }
-    void cacheManager.invalidateByDomain("home-feed");
-    invalidateDiaryDetailCache(diaryId, diary.short_id);
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("home-feed"),
+            ...buildDiaryDetailInvalidationTasks(diaryId, diary.short_id),
+        ],
+        { label: "me/diary-images#create" },
+    );
     return ok({ item: created });
 }
 
@@ -402,10 +429,15 @@ async function handleDiaryImagePatch(
     if (hasOwn(body, "file_id") && prevFileId && prevFileId !== nextFileId) {
         await cleanupOrphanDirectusFiles([prevFileId]);
     }
-    void cacheManager.invalidateByDomain("home-feed");
-    invalidateDiaryDetailCache(
-        String(image.diary_id ?? ""),
-        typeof diary.short_id === "string" ? diary.short_id : null,
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("home-feed"),
+            ...buildDiaryDetailInvalidationTasks(
+                String(image.diary_id ?? ""),
+                typeof diary.short_id === "string" ? diary.short_id : null,
+            ),
+        ],
+        { label: "me/diary-images#patch" },
     );
     return ok({ item: updated });
 }
@@ -420,10 +452,15 @@ async function handleDiaryImageDelete(
     if (fileId) {
         await cleanupOrphanDirectusFiles([fileId]);
     }
-    void cacheManager.invalidateByDomain("home-feed");
-    invalidateDiaryDetailCache(
-        String(image.diary_id ?? ""),
-        typeof diary.short_id === "string" ? diary.short_id : null,
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("home-feed"),
+            ...buildDiaryDetailInvalidationTasks(
+                String(image.diary_id ?? ""),
+                typeof diary.short_id === "string" ? diary.short_id : null,
+            ),
+        ],
+        { label: "me/diary-images#delete" },
     );
     return ok({ id: imageId });
 }

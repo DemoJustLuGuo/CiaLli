@@ -30,6 +30,7 @@ import type { JsonObject, JsonValue } from "@/types/json";
 import { getJsonString, isJsonObject } from "@utils/json-utils";
 
 export const prerender = false;
+const AUTH_NO_STORE = "private, no-store";
 
 function resolveTrustedClientIp(headers: Headers): string {
     const vercelForwarded = headers.get("x-vercel-forwarded-for");
@@ -55,6 +56,7 @@ function json<T>(data: T, init?: ResponseInit): Response {
         ...init,
         headers: {
             "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": AUTH_NO_STORE,
             ...(init?.headers ?? {}),
         },
     });

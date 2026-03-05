@@ -3,6 +3,7 @@ import type { APIContext } from "astro";
 import { assertCan, assertOwnerOrAdmin } from "@/server/auth/acl";
 import { readOneById, updateOne } from "@/server/directus/client";
 import { fail, ok } from "@/server/api/response";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import { parseJsonBody } from "@/server/api/utils";
 import { validateBody } from "@/server/api/validate";
@@ -21,12 +22,18 @@ import {
     validateReplyParent,
 } from "./comments-shared";
 
-function invalidateDiaryDetailCache(id: string, shortId?: string | null): void {
-    void cacheManager.invalidate("diary-detail", id);
+function buildDiaryDetailInvalidationTasks(
+    id: string,
+    shortId?: string | null,
+): Array<Promise<void>> {
+    const tasks: Array<Promise<void>> = [
+        cacheManager.invalidate("diary-detail", id),
+    ];
     const normalizedShortId = String(shortId ?? "").trim();
     if (normalizedShortId) {
-        void cacheManager.invalidate("diary-detail", normalizedShortId);
+        tasks.push(cacheManager.invalidate("diary-detail", normalizedShortId));
     }
+    return tasks;
 }
 
 async function invalidateDiaryDetailCacheByDiaryId(
@@ -36,10 +43,21 @@ async function invalidateDiaryDetailCacheByDiaryId(
         fields: ["id", "short_id"],
     });
     if (!diary) {
-        invalidateDiaryDetailCache(diaryId);
+        await awaitCacheInvalidations(
+            [...buildDiaryDetailInvalidationTasks(diaryId)],
+            { label: "comments-diary#invalidate-detail" },
+        );
         return;
     }
-    invalidateDiaryDetailCache(String(diary.id), diary.short_id);
+    await awaitCacheInvalidations(
+        [
+            ...buildDiaryDetailInvalidationTasks(
+                String(diary.id),
+                diary.short_id,
+            ),
+        ],
+        { label: "comments-diary#invalidate-detail" },
+    );
 }
 
 async function handleDiaryCommentGet(
@@ -116,8 +134,16 @@ async function handleDiaryCommentPost(
     }
 
     const created = await createDiaryComment(diaryId, access.user.id, input);
-    invalidateDiaryDetailCache(String(diary.id), diary.short_id);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            ...buildDiaryDetailInvalidationTasks(
+                String(diary.id),
+                diary.short_id,
+            ),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "comments-diary#create" },
+    );
     return ok({
         item: await renderCommentItem(created),
     });
@@ -155,8 +181,13 @@ async function handleDiaryCommentPatch(
     const input = validateBody(UpdateCommentSchema, body);
     const payload = buildCommentUpdatePayload(input);
     const updated = await updateOne("app_diary_comments", commentId, payload);
-    await invalidateDiaryDetailCacheByDiaryId(comment.diary_id);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            invalidateDiaryDetailCacheByDiaryId(comment.diary_id),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "comments-diary#patch" },
+    );
     return ok({
         item: await renderCommentItem(updated),
     });
@@ -178,8 +209,13 @@ async function handleDiaryCommentDelete(
     assertOwnerOrAdmin(access, comment.author_id);
 
     await deleteCommentWithDescendants("app_diary_comments", commentId);
-    await invalidateDiaryDetailCacheByDiaryId(comment.diary_id);
-    void cacheManager.invalidateByDomain("home-feed");
+    await awaitCacheInvalidations(
+        [
+            invalidateDiaryDetailCacheByDiaryId(comment.diary_id),
+            cacheManager.invalidateByDomain("home-feed"),
+        ],
+        { label: "comments-diary#delete" },
+    );
     return ok({ id: commentId });
 }
 

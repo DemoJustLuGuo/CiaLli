@@ -10,6 +10,7 @@ import {
     toStringValue,
 } from "@/server/api/utils";
 import { cacheManager } from "@/server/cache/manager";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import {
     cleanupOrphanDirectusFiles,
     collectAlbumFileIds,
@@ -28,12 +29,18 @@ import {
     requireAdmin,
 } from "../shared";
 
-function invalidateDiaryDetailCache(id: string, shortId?: string | null): void {
-    void cacheManager.invalidate("diary-detail", id);
+function buildDiaryDetailInvalidationTasks(
+    id: string,
+    shortId?: string | null,
+): Array<Promise<void>> {
+    const tasks: Array<Promise<void>> = [
+        cacheManager.invalidate("diary-detail", id),
+    ];
     const normalizedShortId = String(shortId ?? "").trim();
     if (normalizedShortId) {
-        void cacheManager.invalidate("diary-detail", normalizedShortId);
+        tasks.push(cacheManager.invalidate("diary-detail", normalizedShortId));
     }
+    return tasks;
 }
 
 async function loadAdminVisibleDiary(
@@ -129,38 +136,52 @@ async function handleContentList(context: APIContext): Promise<Response> {
     return ok({ items });
 }
 
-function invalidatePatchCache(
+async function invalidatePatchCache(
     module: AdminModuleKey,
     id: string,
     updatedShortId: string | null | undefined,
     relatedComment: { article_id?: string; diary_id?: string } | undefined,
-): void {
+): Promise<void> {
+    const tasks: Array<Promise<unknown>> = [];
+
     if (module === "articles") {
-        void cacheManager.invalidateByDomain("article-list");
-        void cacheManager.invalidateByDomain("article-public");
-        void cacheManager.invalidate("article-detail", id);
-        void cacheManager.invalidateByDomain("home-feed");
+        tasks.push(
+            cacheManager.invalidateByDomain("article-list"),
+            cacheManager.invalidateByDomain("article-public"),
+            cacheManager.invalidate("article-detail", id),
+            cacheManager.invalidateByDomain("home-feed"),
+        );
     } else if (module === "diaries") {
-        void cacheManager.invalidateByDomain("diary-list");
-        void cacheManager.invalidateByDomain("home-feed");
-        invalidateDiaryDetailCache(id, updatedShortId);
+        tasks.push(
+            cacheManager.invalidateByDomain("diary-list"),
+            cacheManager.invalidateByDomain("home-feed"),
+            ...buildDiaryDetailInvalidationTasks(id, updatedShortId),
+        );
     } else if (module === "albums") {
-        void cacheManager.invalidateByDomain("album-list");
-        void cacheManager.invalidate("album-detail", id);
+        tasks.push(
+            cacheManager.invalidateByDomain("album-list"),
+            cacheManager.invalidate("album-detail", id),
+        );
     } else if (module === "article-comments") {
         const articleId = toOptionalString(relatedComment?.article_id);
         if (articleId) {
-            invalidateArticleInteractionAggregate(articleId);
-            void cacheManager.invalidate("article-detail", articleId);
+            tasks.push(
+                invalidateArticleInteractionAggregate(articleId),
+                cacheManager.invalidate("article-detail", articleId),
+            );
         }
-        void cacheManager.invalidateByDomain("home-feed");
+        tasks.push(cacheManager.invalidateByDomain("home-feed"));
     } else if (module === "diary-comments") {
         const diaryId = toOptionalString(relatedComment?.diary_id);
         if (diaryId) {
-            void invalidateDiaryDetailCache(diaryId);
+            tasks.push(...buildDiaryDetailInvalidationTasks(diaryId));
         }
-        void cacheManager.invalidateByDomain("home-feed");
+        tasks.push(cacheManager.invalidateByDomain("home-feed"));
     }
+
+    await awaitCacheInvalidations(tasks, {
+        label: `admin/content#patch:${module}`,
+    });
 }
 
 type AdminCollection = (typeof ADMIN_MODULE_COLLECTION)[AdminModuleKey];
@@ -201,7 +222,7 @@ async function handleContentPatch(
         module === "diaries" && "short_id" in updated
             ? toOptionalString(updated.short_id)
             : adminVisibleDiary?.short_id;
-    invalidatePatchCache(module, id, updatedShortId, relatedComment);
+    await invalidatePatchCache(module, id, updatedShortId, relatedComment);
     return ok({ item: updated });
 }
 
@@ -240,38 +261,52 @@ async function collectDeleteFileIds(
     return { fileIds: candidateFileIds, deletedDiaryShortId };
 }
 
-function invalidateDeleteCache(
+async function invalidateDeleteCache(
     module: AdminModuleKey,
     id: string,
     deletedDiaryShortId: string | null,
     relatedComment: { article_id?: string; diary_id?: string } | undefined,
-): void {
+): Promise<void> {
+    const tasks: Array<Promise<unknown>> = [];
+
     if (module === "articles") {
-        void cacheManager.invalidateByDomain("article-list");
-        void cacheManager.invalidateByDomain("article-public");
-        void cacheManager.invalidate("article-detail", id);
-        void cacheManager.invalidateByDomain("home-feed");
+        tasks.push(
+            cacheManager.invalidateByDomain("article-list"),
+            cacheManager.invalidateByDomain("article-public"),
+            cacheManager.invalidate("article-detail", id),
+            cacheManager.invalidateByDomain("home-feed"),
+        );
     } else if (module === "diaries") {
-        void cacheManager.invalidateByDomain("diary-list");
-        void cacheManager.invalidateByDomain("home-feed");
-        invalidateDiaryDetailCache(id, deletedDiaryShortId);
+        tasks.push(
+            cacheManager.invalidateByDomain("diary-list"),
+            cacheManager.invalidateByDomain("home-feed"),
+            ...buildDiaryDetailInvalidationTasks(id, deletedDiaryShortId),
+        );
     } else if (module === "albums") {
-        void cacheManager.invalidateByDomain("album-list");
-        void cacheManager.invalidate("album-detail", id);
+        tasks.push(
+            cacheManager.invalidateByDomain("album-list"),
+            cacheManager.invalidate("album-detail", id),
+        );
     } else if (module === "article-comments") {
         const articleId = toOptionalString(relatedComment?.article_id);
         if (articleId) {
-            invalidateArticleInteractionAggregate(articleId);
-            void cacheManager.invalidate("article-detail", articleId);
+            tasks.push(
+                invalidateArticleInteractionAggregate(articleId),
+                cacheManager.invalidate("article-detail", articleId),
+            );
         }
-        void cacheManager.invalidateByDomain("home-feed");
+        tasks.push(cacheManager.invalidateByDomain("home-feed"));
     } else if (module === "diary-comments") {
         const diaryId = toOptionalString(relatedComment?.diary_id);
         if (diaryId) {
-            void invalidateDiaryDetailCache(diaryId);
+            tasks.push(...buildDiaryDetailInvalidationTasks(diaryId));
         }
-        void cacheManager.invalidateByDomain("home-feed");
+        tasks.push(cacheManager.invalidateByDomain("home-feed"));
     }
+
+    await awaitCacheInvalidations(tasks, {
+        label: `admin/content#delete:${module}`,
+    });
 }
 
 async function handleContentDelete(
@@ -288,7 +323,12 @@ async function handleContentDelete(
     );
     await deleteOne(collection, id);
     await cleanupOrphanDirectusFiles(fileIds);
-    invalidateDeleteCache(module, id, deletedDiaryShortId, relatedComment);
+    await invalidateDeleteCache(
+        module,
+        id,
+        deletedDiaryShortId,
+        relatedComment,
+    );
     return ok({ id, module });
 }
 

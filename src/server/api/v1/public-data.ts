@@ -41,6 +41,7 @@ import {
 
 export {
     invalidateOfficialSidebarCache,
+    invalidateOfficialSidebarCacheAsync,
     loadOfficialSidebarProfile,
     loadProfileForViewerByUserId,
     loadPublicProfileByUserId,

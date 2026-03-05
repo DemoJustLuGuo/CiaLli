@@ -254,16 +254,24 @@ async function l2Delete(fullKey: string): Promise<void> {
 // 域版本号
 // ---------------------------------------------------------------------------
 
-const localVersions = new Map<CacheDomain, number>();
+type LocalDomainVersionEntry = {
+    version: number;
+    cachedAt: number;
+};
+
+const localVersions = new Map<CacheDomain, LocalDomainVersionEntry>();
+const DOMAIN_VERSION_REFRESH_MS = 5_000;
 
 function versionKey(domain: CacheDomain): string {
     return `v1:${domain}:__ver__`;
 }
 
 async function getDomainVersion(domain: CacheDomain): Promise<number> {
-    // 优先使用本地版本号
+    // 多实例场景下，域版本号不能长期驻留在本地缓存，否则会错过其他实例的失效操作。
     const local = localVersions.get(domain);
-    if (local !== undefined) return local;
+    if (local && Date.now() - local.cachedAt <= DOMAIN_VERSION_REFRESH_MS) {
+        return local.version;
+    }
 
     const result = await redisCommand(["GET", versionKey(domain)]);
     const ver =
@@ -271,7 +279,10 @@ async function getDomainVersion(domain: CacheDomain): Promise<number> {
             ? parseInt(String(result.result), 10)
             : 0;
     const version = Number.isFinite(ver) ? ver : 0;
-    localVersions.set(domain, version);
+    localVersions.set(domain, {
+        version,
+        cachedAt: Date.now(),
+    });
     return version;
 }
 
@@ -282,7 +293,10 @@ async function incrementDomainVersion(domain: CacheDomain): Promise<number> {
             ? parseInt(String(result.result), 10)
             : 1;
     const version = Number.isFinite(ver) ? ver : 1;
-    localVersions.set(domain, version);
+    localVersions.set(domain, {
+        version,
+        cachedAt: Date.now(),
+    });
     return version;
 }
 

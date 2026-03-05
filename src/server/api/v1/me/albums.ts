@@ -33,6 +33,7 @@ import {
     createWithShortId,
     isUniqueConstraintError,
 } from "@/server/utils/short-id";
+import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 
 import type { AppAccess } from "../shared";
@@ -146,7 +147,10 @@ async function handleAlbumsPost(
         baseSlug,
         access.user.id,
     );
-    void cacheManager.invalidateByDomain("album-list");
+    await awaitCacheInvalidations(
+        [cacheManager.invalidateByDomain("album-list")],
+        { label: "me/albums#create" },
+    );
     return ok({ item: { ...created, tags: safeCsv(created?.tags) } });
 }
 
@@ -272,8 +276,13 @@ async function handleAlbumPatch(
     ) {
         await cleanupOrphanDirectusFiles([prevCoverFile]);
     }
-    void cacheManager.invalidateByDomain("album-list");
-    void cacheManager.invalidate("album-detail", id);
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("album-list"),
+            cacheManager.invalidate("album-detail", id),
+        ],
+        { label: "me/albums#patch" },
+    );
     return ok({ item: { ...updated, tags: safeCsv(updated.tags) } });
 }
 
@@ -284,8 +293,13 @@ async function handleAlbumDelete(
     const fileIds = await collectAlbumFileIds(id, target.cover_file);
     await deleteOne("app_albums", id);
     await cleanupOrphanDirectusFiles(fileIds);
-    void cacheManager.invalidateByDomain("album-list");
-    void cacheManager.invalidate("album-detail", id);
+    await awaitCacheInvalidations(
+        [
+            cacheManager.invalidateByDomain("album-list"),
+            cacheManager.invalidate("album-detail", id),
+        ],
+        { label: "me/albums#delete" },
+    );
     return ok({ id });
 }
 
@@ -372,7 +386,10 @@ async function handlePhotoPost(
     if (created.file_id) {
         await bindFileOwnerToUser(created.file_id, access.user.id);
     }
-    void cacheManager.invalidate("album-detail", albumId);
+    await awaitCacheInvalidations(
+        [cacheManager.invalidate("album-detail", albumId)],
+        { label: "me/album-photos#create" },
+    );
     return ok({ item: { ...created, tags: safeCsv(created.tags) } });
 }
 
@@ -449,7 +466,10 @@ async function handlePhotoPatch(
     ) {
         await cleanupOrphanDirectusFiles([prevFileId]);
     }
-    void cacheManager.invalidate("album-detail", photo.album_id);
+    await awaitCacheInvalidations(
+        [cacheManager.invalidate("album-detail", photo.album_id)],
+        { label: "me/album-photos#patch" },
+    );
     return ok({ item: { ...updated, tags: safeCsv(updated.tags) } });
 }
 
@@ -462,7 +482,10 @@ async function handlePhotoDelete(
     if (fileId) {
         await cleanupOrphanDirectusFiles([fileId]);
     }
-    void cacheManager.invalidate("album-detail", photo.album_id);
+    await awaitCacheInvalidations(
+        [cacheManager.invalidate("album-detail", photo.album_id)],
+        { label: "me/album-photos#delete" },
+    );
     return ok({ id: photoId });
 }
 

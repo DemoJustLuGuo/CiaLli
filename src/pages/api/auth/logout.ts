@@ -11,12 +11,14 @@ import {
 import { assertCsrfToken } from "@/server/security/csrf";
 
 export const prerender = false;
+const AUTH_NO_STORE = "private, no-store";
 
 function json<T>(data: T, init?: ResponseInit): Response {
     return new Response(JSON.stringify(data), {
         ...init,
         headers: {
             "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": AUTH_NO_STORE,
             ...(init?.headers ?? {}),
         },
     });
