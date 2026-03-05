@@ -74,7 +74,7 @@ export const jaContent: Record<string, string> = {
     [Key.contentAnimeEmpty]: "Bangumi コレクションはまだありません",
     [Key.contentAnimeNoMatch]: "一致する Bangumi コレクションがありません。",
     [Key.contentAnimeEmptyBangumi]:
-        "Bangumiの構成またはネットワークを接続を確認してください",
+        "Bangumi の設定またはネットワーク接続を確認してください",
     [Key.contentDiarySubtitle]: "いつでも、どこでも生活を共有",
     [Key.contentDiaryCount]: "件の日記のエントリー",
     [Key.contentDiaryReply]: "返信",
