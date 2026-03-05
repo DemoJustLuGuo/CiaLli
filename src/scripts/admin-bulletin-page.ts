@@ -4,6 +4,8 @@ import { MarkdownImagePasteUploader } from "@/scripts/markdown-image-paste";
 import { MarkdownPreviewClient } from "@/scripts/markdown-preview-client";
 import { runWithTask } from "@/scripts/progress-overlay-manager";
 import { getApiErrorMessage, requestApi as api } from "@/scripts/http-client";
+import { createPublishEditorAdapter } from "@/scripts/publish-editor-monaco";
+import type { PublishEditorAdapter } from "@/scripts/publish-editor-adapter";
 import {
     toRecord,
     toStringValue,
@@ -45,7 +47,7 @@ function makeRenderPreview(
 
 function makeSchedulePreview(
     state: PreviewState,
-    els: BulletinElements,
+    editor: PublishEditorAdapter,
     previewClient: MarkdownPreviewClient,
     renderPreview: () => void,
 ): () => void {
@@ -62,7 +64,7 @@ function makeSchedulePreview(
                 "fast",
                 gen,
                 state,
-                els.bodyEl,
+                editor,
                 previewClient,
                 renderPreview,
             );
@@ -73,7 +75,7 @@ function makeSchedulePreview(
                 "full",
                 gen,
                 state,
-                els.bodyEl,
+                editor,
                 previewClient,
                 renderPreview,
             );
@@ -103,20 +105,24 @@ function setupEditorModeButtons(
 function setupBodyListeners(
     els: BulletinElements,
     state: PreviewState,
+    editor: PublishEditorAdapter,
     previewClient: MarkdownPreviewClient,
     renderPreview: () => void,
     markPreviewDirty: () => void,
     schedulePreview: () => void,
     imagePasteUploader: MarkdownImagePasteUploader,
 ): void {
-    els.bodyEl.addEventListener("input", () => {
+    editor.onInput(() => {
         markPreviewDirty();
         schedulePreview();
     });
-    els.bodyEl.addEventListener("paste", (event) => {
+    editor.onPaste((event) => {
+        // MarkdownImagePasteUploader 仍基于 textarea 选区插入内容，先同步 Monaco 选区避免插入位置偏移。
+        const selection = editor.getSelection();
+        els.bodyEl.setSelectionRange(selection.start, selection.end);
         imagePasteUploader.handlePaste(event);
     });
-    els.bodyEl.addEventListener("blur", () => {
+    editor.onBlur(() => {
         if (!state.previewDirty) return;
         if (state.previewFastTimer !== null) {
             window.clearTimeout(state.previewFastTimer);
@@ -130,7 +136,7 @@ function setupBodyListeners(
             "full",
             state.previewGeneration,
             state,
-            els.bodyEl,
+            editor,
             previewClient,
             renderPreview,
             true,
@@ -143,12 +149,12 @@ function setupBodyListeners(
         if (!button) return;
         const action = String(button.dataset.mdAction || "");
         if (!isToolbarAction(action)) return;
-        applyToolbarAction(action, els.bodyEl, markPreviewDirty);
+        applyToolbarAction(action, editor, markPreviewDirty);
         schedulePreview();
     });
 }
 
-export function initAdminBulletinPage(): void {
+export async function initAdminBulletinPage(): Promise<void> {
     const normalizedPath = window.location.pathname.replace(/\/+$/, "") || "/";
     if (normalizedPath !== "/admin/settings/bulletin") return;
 
@@ -161,6 +167,11 @@ export function initAdminBulletinPage(): void {
     const els = getBulletinElements(formEl);
     if (!els) return;
 
+    const editor: PublishEditorAdapter = await createPublishEditorAdapter({
+        textareaEl: els.bodyEl,
+        monacoHostEl: els.monacoHostEl,
+    });
+
     const runtimeWindow = window as RuntimeWindow;
     const previewClient = new MarkdownPreviewClient("bulletin");
     const state = createPreviewState();
@@ -171,7 +182,7 @@ export function initAdminBulletinPage(): void {
     };
     const schedulePreview = makeSchedulePreview(
         state,
-        els,
+        editor,
         previewClient,
         renderPreview,
     );
@@ -179,13 +190,13 @@ export function initAdminBulletinPage(): void {
     const fillForm = (announcement: Record<string, unknown> | null): void => {
         els.titleEl.value = toStringValue(announcement?.title);
         els.summaryEl.value = toStringValue(announcement?.summary);
-        els.bodyEl.value = toStringValue(announcement?.body_markdown);
+        editor.setValue(toStringValue(announcement?.body_markdown));
         els.closableEl.checked = Boolean(announcement?.closable);
         state.previewHtml = "";
         state.previewError = "";
         state.previewLoading = false;
         state.previewDirty = true;
-        state.previewSource = els.bodyEl.value;
+        state.previewSource = editor.getValue();
         state.previewGeneration += 1;
         previewClient.resetIncrementalState();
         if (state.previewFastTimer !== null) {
@@ -206,6 +217,11 @@ export function initAdminBulletinPage(): void {
         buildUploadTitle: ({ sequence }) =>
             `About-${String(sequence).padStart(2, "0")}`,
         onContentChange: () => {
+            // 图片粘贴/上传完成后，将 textarea 的变更同步回 Monaco
+            const textareaValue = els.bodyEl.value;
+            if (textareaValue !== editor.getValue()) {
+                editor.setValue(textareaValue);
+            }
             markPreviewDirty();
             schedulePreview();
         },
@@ -291,6 +307,7 @@ export function initAdminBulletinPage(): void {
     setupBodyListeners(
         els,
         state,
+        editor,
         previewClient,
         renderPreview,
         markPreviewDirty,
@@ -304,6 +321,7 @@ export function initAdminBulletinPage(): void {
     });
     window.addEventListener("beforeunload", () => {
         imagePasteUploader.dispose();
+        editor.dispose();
     });
 
     void loadBulletin();

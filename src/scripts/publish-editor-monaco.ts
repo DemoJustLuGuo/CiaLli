@@ -1,8 +1,6 @@
 /**
  * 发布页 Monaco 编辑器初始化与适配。
  *
- * - 按需动态加载 Monaco，避免首屏主包膨胀。
- * - 页面仅使用 Monaco，不提供 textarea 回退。
  */
 
 import {
@@ -12,6 +10,7 @@ import {
     type PublishEditorScrollState,
     type PublishEditorSelection,
 } from "@/scripts/publish-editor-adapter";
+import { analyzeMarkdownSyntax } from "@/scripts/publish-editor-markdown-diagnostics";
 
 type MonacoModule = typeof import("monaco-editor");
 type MonacoEditor = import("monaco-editor").editor.IStandaloneCodeEditor;
@@ -22,7 +21,11 @@ type MonacoRuntimeWindow = Window &
             getWorker: (_moduleId: string, label: string) => Worker;
         };
         __publishMonacoWorkerReady?: boolean;
+        __publishMonacoThemeReady?: boolean;
     };
+
+const PUBLISH_MONACO_LIGHT_THEME = "cialli-markdown-light";
+const PUBLISH_MONACO_DARK_THEME = "cialli-markdown-dark";
 
 export type CreatePublishEditorAdapterOptions = {
     textareaEl: HTMLTextAreaElement;
@@ -42,15 +45,70 @@ function clampOffset(offset: number, length: number): number {
     return offset;
 }
 
-function resolveMonacoTheme(): "vs" | "vs-dark" {
+function resolveMonacoTheme():
+    | typeof PUBLISH_MONACO_LIGHT_THEME
+    | typeof PUBLISH_MONACO_DARK_THEME {
     const root = document.documentElement;
     const dataTheme = String(root.getAttribute("data-theme") || "");
     const isDark =
         root.classList.contains("dark") || dataTheme.includes("dark");
-    return isDark ? "vs-dark" : "vs";
+    return isDark ? PUBLISH_MONACO_DARK_THEME : PUBLISH_MONACO_LIGHT_THEME;
+}
+
+function ensurePublishMonacoThemes(monaco: MonacoModule): void {
+    const runtimeWindow = window as MonacoRuntimeWindow;
+    if (runtimeWindow.__publishMonacoThemeReady) {
+        return;
+    }
+
+    // 按 Markdown token 粒度增强高亮，避免默认主题下语法层次不明显。
+    monaco.editor.defineTheme(PUBLISH_MONACO_LIGHT_THEME, {
+        base: "vs",
+        inherit: true,
+        rules: [
+            { token: "keyword.md", foreground: "0f3d91", fontStyle: "bold" },
+            { token: "meta.separator.md", foreground: "5b4b8a" },
+            { token: "strong.md", foreground: "8e2d2d", fontStyle: "bold" },
+            { token: "emphasis.md", foreground: "8e2d2d", fontStyle: "italic" },
+            {
+                token: "string.link.md",
+                foreground: "0b63c9",
+                fontStyle: "underline",
+            },
+            { token: "variable.md", foreground: "b42318" },
+            { token: "string.md", foreground: "0a6b2c" },
+            { token: "variable.source.md", foreground: "0a6b2c" },
+            { token: "comment.md", foreground: "6f7177", fontStyle: "italic" },
+        ],
+        colors: {},
+    });
+
+    monaco.editor.defineTheme(PUBLISH_MONACO_DARK_THEME, {
+        base: "vs-dark",
+        inherit: true,
+        rules: [
+            { token: "keyword.md", foreground: "79a8ff", fontStyle: "bold" },
+            { token: "meta.separator.md", foreground: "c2a8ff" },
+            { token: "strong.md", foreground: "ff8f8f", fontStyle: "bold" },
+            { token: "emphasis.md", foreground: "ff8f8f", fontStyle: "italic" },
+            {
+                token: "string.link.md",
+                foreground: "7ec9ff",
+                fontStyle: "underline",
+            },
+            { token: "variable.md", foreground: "ffb86c" },
+            { token: "string.md", foreground: "8ddf8d" },
+            { token: "variable.source.md", foreground: "8ddf8d" },
+            { token: "comment.md", foreground: "9da5b4", fontStyle: "italic" },
+        ],
+        colors: {},
+    });
+
+    runtimeWindow.__publishMonacoThemeReady = true;
 }
 
 function bindMonacoThemeSync(monaco: MonacoModule): () => void {
+    ensurePublishMonacoThemes(monaco);
     // 监听主题切换：避免夜间模式下 Monaco 配色与全站主题不同步。
     const applyTheme = (): void => {
         monaco.editor.setTheme(resolveMonacoTheme());
@@ -67,6 +125,64 @@ function bindMonacoThemeSync(monaco: MonacoModule): () => void {
 
     return () => {
         observer.disconnect();
+    };
+}
+
+function bindMarkdownSyntaxDiagnostics(
+    monaco: MonacoModule,
+    editor: MonacoEditor,
+): () => void {
+    const model = editor.getModel();
+    if (!model) {
+        return () => {
+            // 无 model 时无需额外清理。
+        };
+    }
+
+    const owner = "publish-markdown-syntax";
+    let timer: number | null = null;
+
+    const applyMarkers = (): void => {
+        const markers = analyzeMarkdownSyntax(model.getValue()).map((item) => ({
+            startLineNumber: item.line,
+            startColumn: item.startColumn,
+            endLineNumber: item.line,
+            endColumn:
+                item.endColumn > item.startColumn
+                    ? item.endColumn
+                    : item.startColumn + 1,
+            message: item.message,
+            severity:
+                item.severity === "error"
+                    ? monaco.MarkerSeverity.Error
+                    : monaco.MarkerSeverity.Warning,
+        }));
+        monaco.editor.setModelMarkers(model, owner, markers);
+    };
+
+    const scheduleMarkers = (): void => {
+        if (timer !== null) {
+            window.clearTimeout(timer);
+        }
+        // 输入过程中做轻量防抖，减少频繁 setModelMarkers 带来的抖动。
+        timer = window.setTimeout(() => {
+            timer = null;
+            applyMarkers();
+        }, 160);
+    };
+
+    applyMarkers();
+    const disposable = editor.onDidChangeModelContent(() => {
+        scheduleMarkers();
+    });
+
+    return () => {
+        if (timer !== null) {
+            window.clearTimeout(timer);
+            timer = null;
+        }
+        disposable.dispose();
+        monaco.editor.setModelMarkers(model, owner, []);
     };
 }
 
@@ -122,9 +238,9 @@ class MonacoEditorAdapter implements PublishEditorAdapter {
         private readonly monaco: MonacoModule,
         private readonly editor: MonacoEditor,
         private readonly textareaEl: HTMLTextAreaElement,
-        themeDispose: () => void,
+        disposeTasks: Array<() => void>,
     ) {
-        this.disposeHandlers.push(themeDispose);
+        this.disposeHandlers.push(...disposeTasks);
         this.syncTextareaValue();
     }
 
@@ -254,20 +370,38 @@ class MonacoEditorAdapter implements PublishEditorAdapter {
 
     onPaste(listener: PublishEditorPasteListener): () => void {
         const domNode = this.editor.getDomNode();
-        if (!domNode) {
-            return () => {
-                // 无 DOM 节点时无需清理。
-            };
-        }
+        const handledEvents = new WeakSet<Event>();
 
         const wrapped = (event: Event): void => {
-            if (event instanceof ClipboardEvent) {
-                listener(event);
+            if (event.type !== "paste") {
+                return;
             }
+            // 同一个 paste 事件可能在 document 与编辑器容器上都命中，需去重防止重复上传。
+            if (handledEvents.has(event)) {
+                return;
+            }
+            // 只在当前 Monaco 文本区聚焦时分发，避免页面其他输入框粘贴被误处理。
+            if (!this.editor.hasTextFocus()) {
+                return;
+            }
+            const clipboardEvent = event as ClipboardEvent;
+            if (!clipboardEvent.clipboardData) {
+                return;
+            }
+            handledEvents.add(event);
+            listener(clipboardEvent);
         };
-        domNode.addEventListener("paste", wrapped);
+
+        document.addEventListener("paste", wrapped, true);
+        if (domNode) {
+            domNode.addEventListener("paste", wrapped, true);
+        }
+
         const dispose = () => {
-            domNode.removeEventListener("paste", wrapped);
+            document.removeEventListener("paste", wrapped, true);
+            if (domNode) {
+                domNode.removeEventListener("paste", wrapped, true);
+            }
         };
         this.disposeHandlers.push(dispose);
         return dispose;
@@ -283,6 +417,10 @@ class MonacoEditorAdapter implements PublishEditorAdapter {
 
     setScrollTop(scrollTop: number): void {
         this.editor.setScrollTop(scrollTop);
+    }
+
+    layout(): void {
+        this.editor.layout();
     }
 
     dispose(): void {
@@ -320,7 +458,11 @@ async function createMonacoAdapter(
     });
 
     const themeDispose = bindMonacoThemeSync(monaco);
-    return new MonacoEditorAdapter(monaco, editor, textareaEl, themeDispose);
+    const diagnosticsDispose = bindMarkdownSyntaxDiagnostics(monaco, editor);
+    return new MonacoEditorAdapter(monaco, editor, textareaEl, [
+        themeDispose,
+        diagnosticsDispose,
+    ]);
 }
 
 export async function createPublishEditorAdapter(

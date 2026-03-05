@@ -64,14 +64,14 @@ import { Icon } from "astro-icon/components";
     </div>
 
     <div id="bulletin-editor-panel" class="space-y-4">
-      <label class="block">
-        <textarea
-          id="bulletin-body-markdown"
-          rows="16"
-          placeholder={i18n(I18nKey.adminBulletinBodyPlaceholder)}
-          class="w-full h-96 rounded-xl border border-(--line-divider) bg-transparent px-4 py-3 text-90 font-mono focus:outline-none focus:border-(--primary) resize-none"
-        ></textarea>
-      </label>
+      <div>
+        <div
+          id="bulletin-editor-monaco"
+          class="w-full h-96 rounded-xl border border-(--line-divider)"
+        >
+        </div>
+        <textarea id="bulletin-body-markdown" class="hidden"></textarea>
+      </div>
 
       <div id="bulletin-toolbar" class="flex flex-wrap items-center gap-2">
         <button

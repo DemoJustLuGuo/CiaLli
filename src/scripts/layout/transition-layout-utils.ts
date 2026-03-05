@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- 该工具文件承载完整过渡状态机常量与实现，按当前边界保留单文件 */
 import { getTocBaselineOffset } from "@/utils/toc-offset";
 import {
     extractSidebarProfilePatch,

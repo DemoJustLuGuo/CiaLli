@@ -7,6 +7,7 @@ import type { MarkdownPreviewClient } from "@/scripts/markdown-preview-client";
 import { normalizeMarkdownPreviewHtml } from "@/scripts/markdown-preview-client";
 import type { MarkdownImagePasteUploader } from "@/scripts/markdown-image-paste";
 import { getApiErrorMessage, requestApi as api } from "@/scripts/http-client";
+import type { PublishEditorAdapter } from "@/scripts/publish-editor-adapter";
 
 export type EditorMode = "edit" | "preview";
 export type ToolbarAction =
@@ -59,6 +60,7 @@ export type BulletinElements = {
     summaryEl: HTMLTextAreaElement;
     closableEl: HTMLInputElement;
     bodyEl: HTMLTextAreaElement;
+    monacoHostEl: HTMLElement;
     modeEditEl: HTMLButtonElement;
     modePreviewEl: HTMLButtonElement;
     editorPanelEl: HTMLElement;
@@ -84,6 +86,7 @@ export function getBulletinElements(
     const summaryEl = getEl<HTMLTextAreaElement>("bulletin-summary");
     const closableEl = getEl<HTMLInputElement>("bulletin-closable");
     const bodyEl = getEl<HTMLTextAreaElement>("bulletin-body-markdown");
+    const monacoHostEl = getEl("bulletin-editor-monaco");
     const modeEditEl = getEl<HTMLButtonElement>("bulletin-mode-edit");
     const modePreviewEl = getEl<HTMLButtonElement>("bulletin-mode-preview");
     const editorPanelEl = getEl("bulletin-editor-panel");
@@ -102,6 +105,7 @@ export function getBulletinElements(
         summaryEl,
         closableEl,
         bodyEl,
+        monacoHostEl,
         modeEditEl,
         modePreviewEl,
         editorPanelEl,
@@ -127,6 +131,7 @@ export function getBulletinElements(
         summaryEl: summaryEl as HTMLTextAreaElement,
         closableEl: closableEl as HTMLInputElement,
         bodyEl: bodyEl as HTMLTextAreaElement,
+        monacoHostEl: monacoHostEl as HTMLElement,
         modeEditEl: modeEditEl as HTMLButtonElement,
         modePreviewEl: modePreviewEl as HTMLButtonElement,
         editorPanelEl: editorPanelEl as HTMLElement,
@@ -288,64 +293,81 @@ export function applyCodeBlockAction(
 
 export function applyToolbarAction(
     action: ToolbarAction,
-    bodyEl: HTMLTextAreaElement,
+    editor: PublishEditorAdapter,
     onDirty: () => void,
 ): void {
-    if (action === "bold") {
-        applyWrapAction(
-            bodyEl,
-            "**",
-            "**",
-            t(I18nKey.adminMarkdownBoldPlaceholder),
-            onDirty,
+    const applyWrap = (
+        prefix: string,
+        suffix: string,
+        placeholder: string,
+    ): void => {
+        const { start, end } = editor.getSelection();
+        const value = editor.getValue();
+        const selected = value.slice(start, end);
+        const content = selected || placeholder;
+        const replacement = `${prefix}${content}${suffix}`;
+        editor.replaceSelection(
+            replacement,
+            prefix.length,
+            prefix.length + content.length,
         );
+        onDirty();
+    };
+
+    if (action === "bold") {
+        applyWrap("**", "**", t(I18nKey.adminMarkdownBoldPlaceholder));
         return;
     }
     if (action === "italic") {
-        applyWrapAction(
-            bodyEl,
-            "*",
-            "*",
-            t(I18nKey.adminMarkdownItalicPlaceholder),
-            onDirty,
-        );
+        applyWrap("*", "*", t(I18nKey.adminMarkdownItalicPlaceholder));
         return;
     }
     if (action === "underline") {
-        applyWrapAction(
-            bodyEl,
-            "<u>",
-            "</u>",
-            t(I18nKey.adminMarkdownUnderlinePlaceholder),
-            onDirty,
-        );
+        applyWrap("<u>", "</u>", t(I18nKey.adminMarkdownUnderlinePlaceholder));
         return;
     }
     if (action === "strike") {
-        applyWrapAction(
-            bodyEl,
-            "~~",
-            "~~",
-            t(I18nKey.adminMarkdownStrikePlaceholder),
-            onDirty,
-        );
+        applyWrap("~~", "~~", t(I18nKey.adminMarkdownStrikePlaceholder));
         return;
     }
     if (action === "quote") {
-        applyQuoteAction(bodyEl, onDirty);
+        const { start, end } = editor.getSelection();
+        const value = editor.getValue();
+        const selected = value.slice(start, end);
+        const source = selected || t(I18nKey.adminMarkdownQuotePlaceholder);
+        const quoted = source
+            .replaceAll("\r\n", "\n")
+            .split("\n")
+            .map((line) => (line.startsWith("> ") ? line : `> ${line}`))
+            .join("\n");
+        editor.replaceSelection(quoted, 0, quoted.length);
+        onDirty();
         return;
     }
     if (action === "inline-code") {
-        applyWrapAction(
-            bodyEl,
-            "`",
-            "`",
-            t(I18nKey.adminMarkdownCodePlaceholder),
-            onDirty,
-        );
+        applyWrap("`", "`", t(I18nKey.adminMarkdownCodePlaceholder));
         return;
     }
-    applyCodeBlockAction(bodyEl, onDirty);
+    // code-block
+    {
+        const { start, end } = editor.getSelection();
+        const value = editor.getValue();
+        const selected =
+            value.slice(start, end) || t(I18nKey.adminMarkdownCodePlaceholder);
+        const language = "text";
+        const block = `\`\`\`${language}\n${selected}\n\`\`\``;
+        const needsLeadingBreak = start > 0 && value[start - 1] !== "\n";
+        const needsTrailingBreak = end < value.length && value[end] !== "\n";
+        const replacement = `${needsLeadingBreak ? "\n" : ""}${block}${needsTrailingBreak ? "\n" : ""}`;
+        const contentStartOffset = (needsLeadingBreak ? 1 : 0) + 8;
+        const contentEndOffset = contentStartOffset + selected.length;
+        editor.replaceSelection(
+            replacement,
+            contentStartOffset,
+            contentEndOffset,
+        );
+        onDirty();
+    }
 }
 
 // ===== Preview rendering =====
@@ -459,7 +481,7 @@ export async function requestPreview(
     mode: "fast" | "full",
     generation: number,
     state: PreviewState,
-    bodyEl: HTMLTextAreaElement,
+    editor: PublishEditorAdapter,
     previewClient: MarkdownPreviewClient,
     renderPreview: () => void,
     force = false,
@@ -467,7 +489,7 @@ export async function requestPreview(
     if (generation !== state.previewGeneration) {
         return;
     }
-    const source = String(bodyEl.value || "");
+    const source = editor.getValue();
     const markdown = source.trim();
     if (shouldSkipFastPreview(state, source, mode, force)) {
         return;

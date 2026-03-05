@@ -35,5 +35,6 @@ export interface PublishEditorAdapter {
     onPaste(listener: PublishEditorPasteListener): () => void;
     getScrollState(): PublishEditorScrollState;
     setScrollTop(scrollTop: number): void;
+    layout(): void;
     dispose(): void;
 }

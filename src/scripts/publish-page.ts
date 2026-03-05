@@ -1,4 +1,4 @@
-/* eslint-disable max-lines -- 文件行数较长，按页面驱动与模块边界保留当前结构 */
+/* eslint-disable max-lines, max-lines-per-function -- 文件与入口函数较长，按页面驱动与模块边界保留当前结构 */
 /**
  * 发布中心页面逻辑 — 纯文章编辑器
  *
@@ -366,6 +366,7 @@ function bindCoverEvents(ctx: PageContext): void {
 function bindSubmitAndAuth(ctx: PageContext, initialIdFromUrl: string): void {
     const {
         dom,
+        editor,
         state,
         ui,
         pendingUploads,
@@ -391,7 +392,13 @@ function bindSubmitAndAuth(ctx: PageContext, initialIdFromUrl: string): void {
     const applyAuthState = (authState: AuthState): void => {
         state.isLoggedIn = authState.isLoggedIn;
         state.currentUsername = toStringValue(authState.username);
+        const wasHidden = dom.workspaceEl.classList.contains("hidden");
         dom.workspaceEl.classList.toggle("hidden", !state.isLoggedIn);
+        if (wasHidden && state.isLoggedIn) {
+            requestAnimationFrame(() => {
+                editor.layout();
+            });
+        }
         if (!state.isLoggedIn) {
             return;
         }
@@ -491,7 +498,6 @@ async function initPublishPageCore(): Promise<void> {
         return;
     }
     root.dataset.publishBound = "1";
-    // 页面重新进入前先释放上一轮实例，避免监听器与编辑器残留。
     disposeActivePublishPage?.();
     activePublishPageController?.abort();
     activePublishPageController = null;
