@@ -1,9 +1,17 @@
 import type { JsonObject } from "@/types/json";
 import { deleteDirectusFile, readMany } from "@/server/directus/client";
 
-const UUID_PATTERN =
-    /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
-
+const UUID_SOURCE =
+    "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const UUID_PATTERN = new RegExp(UUID_SOURCE, "i");
+const RELATIVE_PUBLIC_ASSET_PATTERN = new RegExp(
+    `(?:https?:\\/\\/[^\\s"'()\\]]+)?\\/api\\/v1\\/public\\/assets\\/(${UUID_SOURCE})(?=[/?#)"'\\]\\s]|$)`,
+    "gi",
+);
+const RELATIVE_PRIVATE_ASSET_PATTERN = new RegExp(
+    `(?:https?:\\/\\/[^\\s"'()\\]]+)?\\/api\\/v1\\/assets\\/(${UUID_SOURCE})(?=[/?#)"'\\]\\s]|$)`,
+    "gi",
+);
 const REFERENCE_PAGE_SIZE = 200;
 
 type SupportedReferenceCollection =
@@ -16,12 +24,27 @@ type SupportedReferenceCollection =
     | "app_user_registration_requests"
     | "directus_users";
 
-type ReferenceTarget = {
+type StructuredReferenceTarget = {
     collection: SupportedReferenceCollection;
     field: string;
 };
 
-const REFERENCE_TARGETS: ReferenceTarget[] = [
+type MarkdownReferenceTarget = {
+    collection:
+        | "app_articles"
+        | "app_article_comments"
+        | "app_diary_comments"
+        | "app_diaries";
+    field: "body_markdown" | "body" | "content";
+};
+
+export type DirectusFileCleanupRequest = {
+    candidateFileIds: string[];
+    ownerUserId?: string;
+    allowAdminOverrideUserId?: string;
+};
+
+const STRUCTURED_REFERENCE_TARGETS: StructuredReferenceTarget[] = [
     { collection: "app_user_profiles", field: "header_file" },
     { collection: "app_articles", field: "cover_file" },
     { collection: "app_albums", field: "cover_file" },
@@ -32,61 +55,20 @@ const REFERENCE_TARGETS: ReferenceTarget[] = [
     { collection: "directus_users", field: "avatar" },
 ];
 
+const MARKDOWN_REFERENCE_TARGETS: MarkdownReferenceTarget[] = [
+    { collection: "app_articles", field: "body_markdown" },
+    { collection: "app_article_comments", field: "body" },
+    { collection: "app_diary_comments", field: "body" },
+    { collection: "app_diaries", field: "content" },
+];
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function toUuidCandidates(value: string): string[] {
-    const hits = value.match(UUID_PATTERN) || [];
+    const hits = value.match(new RegExp(UUID_SOURCE, "gi")) || [];
     return hits.map((item: string) => item.toLowerCase());
-}
-
-export function extractDirectusFileIdsFromUnknown(value: unknown): string[] {
-    const found = new Set<string>();
-
-    const walk = (input: unknown): void => {
-        if (typeof input === "string") {
-            for (const fileId of toUuidCandidates(input)) {
-                found.add(fileId);
-            }
-            return;
-        }
-
-        if (Array.isArray(input)) {
-            for (const item of input) {
-                walk(item);
-            }
-            return;
-        }
-
-        if (input && typeof input === "object") {
-            for (const item of Object.values(
-                input as Record<string, unknown>,
-            )) {
-                walk(item);
-            }
-        }
-    };
-
-    walk(value);
-    return [...found];
-}
-
-export function normalizeDirectusFileId(value: unknown): string | null {
-    if (!value) {
-        return null;
-    }
-    if (typeof value === "string") {
-        const raw = value.trim();
-        if (!raw) {
-            return null;
-        }
-        const candidates = toUuidCandidates(raw);
-        return candidates[0] || null;
-    }
-    if (typeof value === "object") {
-        const record = value as { id?: unknown };
-        if (typeof record.id === "string") {
-            return normalizeDirectusFileId(record.id);
-        }
-    }
-    return null;
 }
 
 function toUniqueFileIds(values: unknown[]): string[] {
@@ -98,6 +80,99 @@ function toUniqueFileIds(values: unknown[]): string[] {
         }
     }
     return [...set];
+}
+
+function normalizeOwnerId(value: unknown): string | null {
+    if (typeof value === "string") {
+        const normalized = value.trim();
+        return normalized || null;
+    }
+    if (value && typeof value === "object") {
+        const record = value as { id?: unknown };
+        return normalizeOwnerId(record.id);
+    }
+    return null;
+}
+
+function buildExternalPublicAssetPattern(): RegExp | null {
+    const rawBaseUrl = (
+        process.env.PUBLIC_ASSET_BASE_URL ||
+        import.meta.env.PUBLIC_ASSET_BASE_URL ||
+        ""
+    )
+        .toString()
+        .trim();
+    if (!rawBaseUrl) {
+        return null;
+    }
+    try {
+        const origin = new URL(rawBaseUrl).origin;
+        return new RegExp(
+            `${escapeRegExp(origin)}\\/(${UUID_SOURCE})(?=[/?#)"'\\]\\s]|$)`,
+            "gi",
+        );
+    } catch {
+        return null;
+    }
+}
+
+function collectAssetIdsFromString(value: string, output: Set<string>): void {
+    const patterns = [
+        RELATIVE_PUBLIC_ASSET_PATTERN,
+        RELATIVE_PRIVATE_ASSET_PATTERN,
+        buildExternalPublicAssetPattern(),
+    ];
+
+    for (const pattern of patterns) {
+        if (!pattern) {
+            continue;
+        }
+        pattern.lastIndex = 0;
+        let match = pattern.exec(value);
+        while (match) {
+            const fileId = normalizeDirectusFileId(match[1]);
+            if (fileId) {
+                output.add(fileId);
+            }
+            match = pattern.exec(value);
+        }
+    }
+}
+
+function collectReferencedAssetIdsFromUnknown(
+    value: unknown,
+    candidates: Set<string>,
+    output: Set<string>,
+): void {
+    if (output.size >= candidates.size) {
+        return;
+    }
+    if (typeof value === "string") {
+        const found = extractDirectusAssetIdsFromMarkdown(value);
+        for (const fileId of found) {
+            if (candidates.has(fileId)) {
+                output.add(fileId);
+            }
+        }
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            collectReferencedAssetIdsFromUnknown(item, candidates, output);
+            if (output.size >= candidates.size) {
+                return;
+            }
+        }
+        return;
+    }
+    if (value && typeof value === "object") {
+        for (const item of Object.values(value as Record<string, unknown>)) {
+            collectReferencedAssetIdsFromUnknown(item, candidates, output);
+            if (output.size >= candidates.size) {
+                return;
+            }
+        }
+    }
 }
 
 async function collectFileIdsFromCollection(
@@ -191,41 +266,6 @@ async function collectOwnerIds(
         .filter(Boolean);
 }
 
-function collectReferencedIdsFromUnknown(
-    value: unknown,
-    candidates: Set<string>,
-    output: Set<string>,
-): void {
-    if (output.size >= candidates.size) {
-        return;
-    }
-    if (typeof value === "string") {
-        for (const fileId of toUuidCandidates(value)) {
-            if (candidates.has(fileId)) {
-                output.add(fileId);
-            }
-        }
-        return;
-    }
-    if (Array.isArray(value)) {
-        for (const item of value) {
-            collectReferencedIdsFromUnknown(item, candidates, output);
-            if (output.size >= candidates.size) {
-                return;
-            }
-        }
-        return;
-    }
-    if (value && typeof value === "object") {
-        for (const item of Object.values(value as Record<string, unknown>)) {
-            collectReferencedIdsFromUnknown(item, candidates, output);
-            if (output.size >= candidates.size) {
-                return;
-            }
-        }
-    }
-}
-
 async function collectReferencedIdsInSiteSettings(
     fileIds: string[],
 ): Promise<Set<string>> {
@@ -239,7 +279,11 @@ async function collectReferencedIdsInSiteSettings(
         limit: 20,
     });
     for (const row of rows as Array<Record<string, unknown>>) {
-        collectReferencedIdsFromUnknown(row.settings, candidateSet, referenced);
+        collectReferencedAssetIdsFromUnknown(
+            row.settings,
+            candidateSet,
+            referenced,
+        );
         if (referenced.size >= candidateSet.size) {
             break;
         }
@@ -247,8 +291,8 @@ async function collectReferencedIdsInSiteSettings(
     return referenced;
 }
 
-async function collectReferencedIdsInTarget(
-    target: ReferenceTarget,
+async function collectReferencedIdsInStructuredTarget(
+    target: StructuredReferenceTarget,
     fileIds: string[],
 ): Promise<Set<string>> {
     const found = new Set<string>();
@@ -278,33 +322,174 @@ async function collectReferencedIdsInTarget(
     return found;
 }
 
-export async function cleanupOrphanDirectusFiles(
-    values: unknown[],
+async function collectReferencedIdsInMarkdownTarget(
+    target: MarkdownReferenceTarget,
+    fileIds: string[],
+): Promise<Set<string>> {
+    const candidateSet = new Set(fileIds);
+    const found = new Set<string>();
+    if (candidateSet.size === 0) {
+        return found;
+    }
+
+    let offset = 0;
+    while (true) {
+        const rows = await readMany(target.collection, {
+            fields: [target.field],
+            limit: REFERENCE_PAGE_SIZE,
+            offset,
+        });
+        const list = rows as Array<Record<string, unknown>>;
+        for (const row of list) {
+            collectReferencedAssetIdsFromUnknown(
+                row[target.field],
+                candidateSet,
+                found,
+            );
+            if (found.size >= candidateSet.size) {
+                return found;
+            }
+        }
+        if (list.length < REFERENCE_PAGE_SIZE) {
+            break;
+        }
+        offset += list.length;
+    }
+    return found;
+}
+
+async function collectDeletableOwnedFileIds(
+    candidateFileIds: string[],
+    allowedOwnerIds: Set<string>,
 ): Promise<string[]> {
-    const candidateFileIds = toUniqueFileIds(values);
+    if (candidateFileIds.length === 0) {
+        return [];
+    }
+    if (allowedOwnerIds.size === 0) {
+        return [...candidateFileIds];
+    }
+
+    const rows = await readMany("directus_files", {
+        filter: { id: { _in: candidateFileIds } } as JsonObject,
+        fields: ["id", "uploaded_by", "app_owner_user_id"],
+        limit: 5000,
+    });
+    const deletable = new Set<string>();
+
+    for (const row of rows as Array<Record<string, unknown>>) {
+        const fileId = normalizeDirectusFileId(row.id);
+        if (!fileId) {
+            continue;
+        }
+        const ownerId =
+            normalizeOwnerId(row.app_owner_user_id) ||
+            normalizeOwnerId(row.uploaded_by);
+        if (ownerId && allowedOwnerIds.has(ownerId)) {
+            deletable.add(fileId);
+        }
+    }
+
+    return candidateFileIds.filter((fileId) => deletable.has(fileId));
+}
+
+export function extractDirectusAssetIdsFromMarkdown(
+    value: string | null | undefined,
+): string[] {
+    if (typeof value !== "string" || !value.trim()) {
+        return [];
+    }
+
+    const found = new Set<string>();
+    // 仅接受项目生成的资源 URL，避免把正文里的普通 UUID 误判成文件引用。
+    collectAssetIdsFromString(value, found);
+    return [...found];
+}
+
+export function normalizeDirectusFileId(value: unknown): string | null {
+    if (!value) {
+        return null;
+    }
+    if (typeof value === "string") {
+        const raw = value.trim();
+        if (!raw || !UUID_PATTERN.test(raw)) {
+            return null;
+        }
+        const candidates = toUuidCandidates(raw);
+        return candidates[0] || null;
+    }
+    if (typeof value === "object") {
+        const record = value as { id?: unknown };
+        if (typeof record.id === "string") {
+            return normalizeDirectusFileId(record.id);
+        }
+    }
+    return null;
+}
+
+export async function collectReferencedDirectusFileIds(
+    candidateFileIds: string[],
+): Promise<Set<string>> {
+    const normalizedCandidateIds = toUniqueFileIds(candidateFileIds);
+    const referencedSet = await collectReferencedIdsInSiteSettings(
+        normalizedCandidateIds,
+    );
+    const unresolved = normalizedCandidateIds.filter(
+        (id) => !referencedSet.has(id),
+    );
+    if (unresolved.length === 0) {
+        return referencedSet;
+    }
+
+    const [structuredMatches, markdownMatches] = await Promise.all([
+        Promise.all(
+            STRUCTURED_REFERENCE_TARGETS.map((target) =>
+                collectReferencedIdsInStructuredTarget(target, unresolved),
+            ),
+        ),
+        Promise.all(
+            MARKDOWN_REFERENCE_TARGETS.map((target) =>
+                collectReferencedIdsInMarkdownTarget(target, unresolved),
+            ),
+        ),
+    ]);
+
+    for (const result of [...structuredMatches, ...markdownMatches]) {
+        for (const id of result) {
+            referencedSet.add(id);
+        }
+    }
+
+    return referencedSet;
+}
+
+export async function cleanupOwnedOrphanDirectusFiles(
+    request: DirectusFileCleanupRequest,
+): Promise<string[]> {
+    const candidateFileIds = toUniqueFileIds(request.candidateFileIds);
     if (candidateFileIds.length === 0) {
         return [];
     }
 
-    const referencedSet =
-        await collectReferencedIdsInSiteSettings(candidateFileIds);
-    const unresolved = candidateFileIds.filter((id) => !referencedSet.has(id));
-    if (unresolved.length > 0) {
-        const matches = await Promise.all(
-            REFERENCE_TARGETS.map((target) =>
-                collectReferencedIdsInTarget(target, unresolved),
-            ),
-        );
-        for (const result of matches) {
-            for (const id of result) {
-                referencedSet.add(id);
-            }
-        }
+    const allowedOwnerIds = new Set(
+        [request.ownerUserId, request.allowAdminOverrideUserId]
+            .map((value) => String(value ?? "").trim())
+            .filter(Boolean),
+    );
+    // 仅允许删除归属明确且属于当前业务主体的文件。
+    const ownedCandidateIds = await collectDeletableOwnedFileIds(
+        candidateFileIds,
+        allowedOwnerIds,
+    );
+    if (ownedCandidateIds.length === 0) {
+        return [];
     }
 
-    const orphanFileIds = candidateFileIds.filter(
+    const referencedSet =
+        await collectReferencedDirectusFileIds(ownedCandidateIds);
+    const orphanFileIds = ownedCandidateIds.filter(
         (id) => !referencedSet.has(id),
     );
+
     for (const fileId of orphanFileIds) {
         await deleteDirectusFile(fileId);
     }

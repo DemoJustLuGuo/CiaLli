@@ -17,9 +17,10 @@ import {
 import { cacheManager } from "@/server/cache/manager";
 import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import {
-    cleanupOrphanDirectusFiles,
+    cleanupOwnedOrphanDirectusFiles,
     collectAlbumFileIds,
     collectDiaryFileIds,
+    extractDirectusAssetIdsFromMarkdown,
     normalizeDirectusFileId,
 } from "../shared/file-cleanup";
 
@@ -235,35 +236,84 @@ async function collectDeleteFileIds(
     module: AdminModuleKey,
     id: string,
     adminVisibleDiary: { id: string; short_id: string | null } | null,
-): Promise<{ fileIds: string[]; deletedDiaryShortId: string | null }> {
+): Promise<{
+    fileIds: string[];
+    deletedDiaryShortId: string | null;
+    ownerUserId: string | null;
+}> {
     const candidateFileIds: string[] = [];
+    let ownerUserId: string | null = null;
     if (module === "articles") {
         const rows = await readMany("app_articles", {
             filter: { id: { _eq: id } } as JsonObject,
-            fields: ["cover_file"],
+            fields: ["cover_file", "body_markdown", "author_id"],
             limit: 1,
         });
+        ownerUserId = toOptionalString(rows[0]?.author_id);
         const coverFile = normalizeDirectusFileId(rows[0]?.cover_file);
         if (coverFile) {
             candidateFileIds.push(coverFile);
         }
+        candidateFileIds.push(
+            ...extractDirectusAssetIdsFromMarkdown(
+                toOptionalString(rows[0]?.body_markdown) ?? "",
+            ),
+        );
     }
     if (module === "albums") {
         const rows = await readMany("app_albums", {
             filter: { id: { _eq: id } } as JsonObject,
-            fields: ["cover_file"],
+            fields: ["cover_file", "author_id"],
             limit: 1,
         });
+        ownerUserId = toOptionalString(rows[0]?.author_id);
         const fileIds = await collectAlbumFileIds(id, rows[0]?.cover_file);
         candidateFileIds.push(...fileIds);
     }
     if (module === "diaries") {
+        const rows = await readMany("app_diaries", {
+            filter: { id: { _eq: id } } as JsonObject,
+            fields: ["author_id", "content"],
+            limit: 1,
+        });
+        ownerUserId = toOptionalString(rows[0]?.author_id);
         const fileIds = await collectDiaryFileIds(id);
         candidateFileIds.push(...fileIds);
+        candidateFileIds.push(
+            ...extractDirectusAssetIdsFromMarkdown(
+                toOptionalString(rows[0]?.content) ?? "",
+            ),
+        );
+    }
+    if (module === "article-comments") {
+        const rows = await readMany("app_article_comments", {
+            filter: { id: { _eq: id } } as JsonObject,
+            fields: ["author_id", "body"],
+            limit: 1,
+        });
+        ownerUserId = toOptionalString(rows[0]?.author_id);
+        candidateFileIds.push(
+            ...extractDirectusAssetIdsFromMarkdown(
+                toOptionalString(rows[0]?.body) ?? "",
+            ),
+        );
+    }
+    if (module === "diary-comments") {
+        const rows = await readMany("app_diary_comments", {
+            filter: { id: { _eq: id } } as JsonObject,
+            fields: ["author_id", "body"],
+            limit: 1,
+        });
+        ownerUserId = toOptionalString(rows[0]?.author_id);
+        candidateFileIds.push(
+            ...extractDirectusAssetIdsFromMarkdown(
+                toOptionalString(rows[0]?.body) ?? "",
+            ),
+        );
     }
     const deletedDiaryShortId =
         module === "diaries" ? (adminVisibleDiary?.short_id ?? null) : null;
-    return { fileIds: candidateFileIds, deletedDiaryShortId };
+    return { fileIds: candidateFileIds, deletedDiaryShortId, ownerUserId };
 }
 
 async function invalidateDeleteCache(
@@ -321,13 +371,13 @@ async function handleContentDelete(
     adminVisibleDiary: { id: string; short_id: string | null } | null,
     relatedComment: { article_id?: string; diary_id?: string } | undefined,
 ): Promise<Response> {
-    const { fileIds, deletedDiaryShortId } = await collectDeleteFileIds(
-        module,
-        id,
-        adminVisibleDiary,
-    );
+    const { fileIds, deletedDiaryShortId, ownerUserId } =
+        await collectDeleteFileIds(module, id, adminVisibleDiary);
     await deleteOne(collection, id);
-    await cleanupOrphanDirectusFiles(fileIds);
+    await cleanupOwnedOrphanDirectusFiles({
+        candidateFileIds: fileIds,
+        ownerUserId: ownerUserId ?? undefined,
+    });
     await invalidateDeleteCache(
         module,
         id,
