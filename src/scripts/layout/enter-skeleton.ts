@@ -184,6 +184,22 @@ export function activateEnterSkeleton(): void {
     applyMode(mode, getRoot());
 }
 
+export function prepareEnterSkeletonForIncomingDocument(
+    targetDocument: Document,
+): void {
+    if (typeof window === "undefined") {
+        return;
+    }
+
+    activationToken += 1;
+    clearDeactivationTimer();
+    activatedAt = performance.now();
+    applyMode(
+        detectEnterSkeletonMode(targetDocument),
+        targetDocument.documentElement,
+    );
+}
+
 export function deactivateEnterSkeleton(): void {
     const root = getRoot();
     if (!root || typeof window === "undefined") {
@@ -232,20 +248,9 @@ export function isEnterSkeletonActive(): boolean {
 export function syncEnterSkeletonStateToIncomingDocument(
     newDocument: Document,
 ): void {
-    const currentRoot = getRoot();
     const incomingRoot = newDocument.documentElement;
-    if (!currentRoot || !(incomingRoot instanceof HTMLElement)) {
+    if (!(incomingRoot instanceof HTMLElement)) {
         return;
     }
-
-    const isActive = currentRoot.classList.contains(ACTIVE_CLASS);
-    incomingRoot.classList.toggle(ACTIVE_CLASS, isActive);
-    if (!isActive) {
-        incomingRoot.removeAttribute(MODE_ATTR);
-        return;
-    }
-
-    // 在 swap 前为 incoming 文档提前解析骨架模式，避免交换后再次激活造成“二次揭幕”
-    const incomingMode = detectEnterSkeletonMode(newDocument);
-    incomingRoot.setAttribute(MODE_ATTR, incomingMode);
+    prepareEnterSkeletonForIncomingDocument(newDocument);
 }

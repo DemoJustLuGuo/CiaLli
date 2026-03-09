@@ -23,17 +23,16 @@ export const BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS =
 export const SPEC_TO_BANNER_TRANSITION_CLASS =
     "layout-spec-to-banner-transition";
 export const BANNER_TO_SPEC_SHIFT_VAR = "--layout-banner-route-up-shift";
-export const BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR =
-    "--layout-banner-route-banner-extra-shift";
+export const BANNER_TO_SPEC_BG_OVERSHOOT_VAR =
+    "--layout-banner-route-bg-overshoot";
 export const BANNER_TO_SPEC_TRANSITION_DURATION_VAR =
     "--layout-banner-route-transition-duration";
 export const BANNER_TO_SPEC_VT_DURATION_VAR =
     "--layout-banner-route-vt-duration";
 export const BANNER_TO_SPEC_MAIN_PANEL_VT_NAME = "banner-route-main-panel";
-export const BANNER_TO_SPEC_BANNER_VT_NAME = "banner-route-banner";
 export const ENTER_SKELETON_AWAITING_REPLACE_CLASS =
     "enter-skeleton-awaiting-replace";
-export const BANNER_TO_SPEC_TRANSITION_DURATION_MS = 920;
+export const BANNER_TO_SPEC_TRANSITION_DURATION_MS = 980;
 export const ROOT_RUNTIME_CLASSES_TO_PRESERVE = [
     "dark",
     "is-theme-transitioning",
@@ -51,10 +50,8 @@ export const ROOT_RUNTIME_STYLE_PROPERTIES_TO_PRESERVE = [
     "font-size",
     "--hue",
     "--banner-height-extend",
-    BANNER_TO_SPEC_SHIFT_VAR,
-    BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR,
+    BANNER_TO_SPEC_BG_OVERSHOOT_VAR,
     BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
-    BANNER_TO_SPEC_VT_DURATION_VAR,
 ] as const;
 export const ROOT_RUNTIME_DATA_ATTRIBUTES_TO_PRESERVE = [
     "data-desktop-unsupported",
@@ -62,6 +59,22 @@ export const ROOT_RUNTIME_DATA_ATTRIBUTES_TO_PRESERVE = [
     "data-enter-skeleton-mode",
     "data-nav-phase",
 ] as const;
+
+export type BannerWaveLayerSnapshot = {
+    currentTimeMs: number | null;
+    durationMs: number | null;
+};
+
+export type BannerWaveAnimationSnapshot = {
+    layers: BannerWaveLayerSnapshot[];
+};
+
+type BannerToSpecTransitionEligibility = {
+    currentIsHome: boolean;
+    isTargetHome: boolean;
+    body: HTMLElement | null;
+    bannerWrapper: HTMLElement | null;
+};
 
 // ===== Navigation target / pathname utils =====
 
@@ -140,50 +153,224 @@ function resolveAnchorViewportTop(selector: string): number | null {
 
 type BannerToSpecShiftMetrics = {
     mainPanelShiftPx: number;
-    bannerExtraShiftPx: number;
+    backgroundOvershootPx: number;
 };
+
+type MainPanelShiftComputationInput = {
+    mainPanelTop: number | null;
+    targetTop: number;
+    sidebarTops: number[];
+    sidebarOvershootTolerancePx?: number;
+};
+
+export function resolveMainPanelShiftFromViewportPositions(
+    input: MainPanelShiftComputationInput,
+): number {
+    const {
+        mainPanelTop,
+        targetTop,
+        sidebarTops,
+        sidebarOvershootTolerancePx = SIDEBAR_OVERSHOOT_TOLERANCE_PX_VALUE,
+    } = input;
+    if (mainPanelTop === null) {
+        return 0;
+    }
+
+    const rawMainShift = mainPanelTop - targetTop;
+    if (rawMainShift <= 0) {
+        return 0;
+    }
+
+    const sidebarCap = sidebarTops
+        .map((top) => top - (targetTop - sidebarOvershootTolerancePx))
+        .reduce<number>(
+            (minCap, candidate) => Math.min(minCap, candidate),
+            Number.POSITIVE_INFINITY,
+        );
+    const resolvedShift = Number.isFinite(sidebarCap)
+        ? Math.min(rawMainShift, sidebarCap)
+        : rawMainShift;
+    return Math.max(0, Number(resolvedShift.toFixed(3)));
+}
+
+export function resolveBannerToSpecShiftMetricsFromViewportPositions(
+    input: MainPanelShiftComputationInput,
+): BannerToSpecShiftMetrics {
+    const mainPanelShiftPx = resolveMainPanelShiftFromViewportPositions(input);
+    if (input.mainPanelTop === null) {
+        return {
+            mainPanelShiftPx,
+            backgroundOvershootPx: 0,
+        };
+    }
+
+    return {
+        mainPanelShiftPx,
+        // 背景层需要继续上推到视口顶部，用目标顶边高度作为额外位移。
+        backgroundOvershootPx: Math.max(0, Number(input.targetTop.toFixed(3))),
+    };
+}
 
 export function resolveBannerToSpecShiftMetrics(
     newDocument?: Document,
 ): BannerToSpecShiftMetrics {
     const targetTop = resolveTargetMainPanelTopPx(newDocument);
     const mainPanelTop = resolveAnchorViewportTop(".main-panel-wrapper");
-    const resolvedBannerExtraShift = Math.max(0, Number(targetTop.toFixed(3)));
-    if (mainPanelTop === null) {
-        return {
-            mainPanelShiftPx: 0,
-            bannerExtraShiftPx: resolvedBannerExtraShift,
-        };
-    }
-
-    const rawMainShift = mainPanelTop - targetTop;
-    if (rawMainShift <= 0) {
-        return {
-            mainPanelShiftPx: 0,
-            bannerExtraShiftPx: resolvedBannerExtraShift,
-        };
-    }
-
-    const sidebarCap = ["#sidebar", "#right-sidebar-slot"]
+    const sidebarTops = ["#sidebar", "#right-sidebar-slot"]
         .map((selector) => resolveAnchorViewportTop(selector))
-        .filter((top): top is number => typeof top === "number")
-        .map((top) => top - (targetTop - SIDEBAR_OVERSHOOT_TOLERANCE_PX_VALUE))
-        .reduce<number>(
-            (minCap, candidate) => Math.min(minCap, candidate),
-            Number.POSITIVE_INFINITY,
-        );
+        .filter((top): top is number => typeof top === "number");
 
-    const resolvedShift = Number.isFinite(sidebarCap)
-        ? Math.min(rawMainShift, sidebarCap)
-        : rawMainShift;
-
-    return {
-        mainPanelShiftPx: Math.max(0, Number(resolvedShift.toFixed(3))),
-        bannerExtraShiftPx: resolvedBannerExtraShift,
-    };
+    return resolveBannerToSpecShiftMetricsFromViewportPositions({
+        mainPanelTop,
+        targetTop,
+        sidebarTops,
+    });
 }
 
 // ===== DOM helpers =====
+
+function parseAnimationTimeMs(timeValue: string): number | null {
+    const [firstSegment = ""] = timeValue.split(",", 1);
+    const trimmed = firstSegment.trim();
+    if (!trimmed) {
+        return null;
+    }
+    const numericValue = Number.parseFloat(trimmed);
+    if (!Number.isFinite(numericValue)) {
+        return null;
+    }
+    if (trimmed.endsWith("ms")) {
+        return numericValue;
+    }
+    if (trimmed.endsWith("s")) {
+        return numericValue * 1000;
+    }
+    return null;
+}
+
+export function captureBannerWaveAnimationSnapshot(
+    sourceDocument: Document = document,
+): BannerWaveAnimationSnapshot | null {
+    const waveUses = Array.from(
+        sourceDocument.querySelectorAll<SVGUseElement>("#header-waves use"),
+    );
+    if (waveUses.length === 0) {
+        return null;
+    }
+
+    return {
+        layers: waveUses.map((waveUse) => {
+            const animation = waveUse.getAnimations()[0];
+            const currentTime = animation?.currentTime;
+            const timing = animation?.effect?.getTiming();
+            const durationFromEffect =
+                typeof timing?.duration === "number" &&
+                Number.isFinite(timing.duration)
+                    ? timing.duration
+                    : null;
+            const duration =
+                durationFromEffect ??
+                parseAnimationTimeMs(waveUse.style.animationDuration);
+            const delayMs = parseAnimationTimeMs(waveUse.style.animationDelay);
+            const currentTimeMs =
+                typeof currentTime === "number" && Number.isFinite(currentTime)
+                    ? currentTime
+                    : delayMs !== null && delayMs < 0
+                      ? Math.abs(delayMs)
+                      : null;
+            return {
+                currentTimeMs,
+                durationMs: duration,
+            };
+        }),
+    };
+}
+
+function normalizeAnimationPhaseMs(
+    currentTimeMs: number,
+    durationMs: number,
+): number {
+    if (durationMs <= 0) {
+        return 0;
+    }
+    const normalized = currentTimeMs % durationMs;
+    return normalized >= 0 ? normalized : normalized + durationMs;
+}
+
+function primeWaveGroupFromSnapshot(
+    selector: string,
+    snapshot: BannerWaveAnimationSnapshot,
+    targetDocument: Document,
+): void {
+    const waveUses = Array.from(
+        targetDocument.querySelectorAll<SVGUseElement>(selector),
+    );
+    waveUses.forEach((waveUse, index) => {
+        const layer = snapshot.layers[index];
+        if (
+            !layer ||
+            layer.currentTimeMs === null ||
+            layer.durationMs === null ||
+            layer.durationMs <= 0
+        ) {
+            return;
+        }
+
+        const normalizedPhaseMs = normalizeAnimationPhaseMs(
+            layer.currentTimeMs,
+            layer.durationMs,
+        );
+        // 在 incoming 文档首帧前直接改写 CSS 动画 timing，
+        // 让新建 DOM 第一次绘制就落在旧页面同一相位上。
+        waveUse.style.animationDuration = `${layer.durationMs}ms`;
+        waveUse.style.animationDelay = `${-normalizedPhaseMs}ms`;
+        waveUse.style.animationPlayState = "running";
+    });
+}
+
+export function primeBannerWaveAnimationSnapshot(
+    snapshot: BannerWaveAnimationSnapshot | null,
+    targetDocument: Document,
+): void {
+    if (!snapshot) {
+        return;
+    }
+    primeWaveGroupFromSnapshot("#header-waves use", snapshot, targetDocument);
+    primeWaveGroupFromSnapshot(
+        ".main-panel-transition-bg-wave use",
+        snapshot,
+        targetDocument,
+    );
+}
+
+export function applyBannerWaveAnimationSnapshot(
+    snapshot: BannerWaveAnimationSnapshot | null,
+    targetDocument: Document = document,
+): void {
+    if (!snapshot) {
+        return;
+    }
+
+    const syncWaveGroup = (selector: string): void => {
+        const waveUses = Array.from(
+            targetDocument.querySelectorAll<SVGUseElement>(selector),
+        );
+        waveUses.forEach((waveUse, index) => {
+            const layer = snapshot.layers[index];
+            if (!layer || layer.currentTimeMs === null) {
+                return;
+            }
+
+            const animation = waveUse.getAnimations()[0];
+            if (animation) {
+                animation.currentTime = layer.currentTimeMs;
+            }
+        });
+    };
+
+    syncWaveGroup("#header-waves use");
+    syncWaveGroup(".main-panel-transition-bg-wave use");
+}
 
 export function stripOnloadAnimationClasses(scope: HTMLElement): void {
     scope.classList.remove("onload-animation");
@@ -203,13 +390,6 @@ export function setBannerToSpecViewTransitionNames(scope: ParentNode): void {
             BANNER_TO_SPEC_MAIN_PANEL_VT_NAME,
         );
     }
-    const bannerWrapper = scope.querySelector<HTMLElement>("#banner-wrapper");
-    if (bannerWrapper) {
-        bannerWrapper.style.setProperty(
-            "view-transition-name",
-            BANNER_TO_SPEC_BANNER_VT_NAME,
-        );
-    }
 }
 
 export function clearBannerToSpecViewTransitionNames(scope: ParentNode): void {
@@ -217,10 +397,46 @@ export function clearBannerToSpecViewTransitionNames(scope: ParentNode): void {
     if (mainPanel) {
         mainPanel.style.removeProperty("view-transition-name");
     }
-    const bannerWrapper = scope.querySelector<HTMLElement>("#banner-wrapper");
-    if (bannerWrapper) {
-        bannerWrapper.style.removeProperty("view-transition-name");
+}
+
+export function bridgeCurrentBannerToIncomingDocument(
+    newDocument: Document,
+    currentDocument: Document = document,
+): boolean {
+    const currentBanner = currentDocument.getElementById("banner-wrapper");
+    const incomingBanner = newDocument.getElementById("banner-wrapper");
+    if (
+        !(currentBanner instanceof HTMLElement) ||
+        !(incomingBanner instanceof HTMLElement)
+    ) {
+        return false;
     }
+
+    // 默认 swap 真正提交前，先把当前 banner 克隆进 incoming 文档，
+    // 避免 placeholder banner 在 swap 起始帧短暂露出。
+    const bridgedBanner = currentBanner.cloneNode(true);
+    incomingBanner.replaceWith(bridgedBanner);
+    return true;
+}
+
+export function shouldStartBannerToSpecTransition(
+    eligibility: BannerToSpecTransitionEligibility,
+): boolean {
+    const { currentIsHome, isTargetHome, body, bannerWrapper } = eligibility;
+    if (
+        !currentIsHome ||
+        isTargetHome ||
+        !(body instanceof HTMLElement) ||
+        !(bannerWrapper instanceof HTMLElement)
+    ) {
+        return false;
+    }
+
+    if (body.dataset.layoutMode !== "banner") {
+        return false;
+    }
+
+    return !bannerWrapper.classList.contains("wallpaper-layer-hidden");
 }
 
 export function freezeSpecLayoutStateForHomeDocument(
@@ -239,17 +455,59 @@ export function freezeSpecLayoutStateForHomeDocument(
     body.classList.add("waves-paused");
 }
 
+export function primeBannerLayoutStateForIncomingDocument(
+    targetDocument: Document,
+): void {
+    const body = targetDocument.body;
+    if (!(body instanceof HTMLElement)) {
+        return;
+    }
+
+    body.dataset.layoutMode = "banner";
+    body.dataset.routeHome = "true";
+    body.classList.add("lg:is-home");
+    body.classList.add("enable-banner");
+    body.classList.remove("no-banner-mode");
+    body.classList.remove("waves-paused");
+    body.classList.remove("scroll-collapsed-banner");
+
+    const bannerWrapper = targetDocument.getElementById("banner-wrapper");
+    if (bannerWrapper instanceof HTMLElement) {
+        bannerWrapper.classList.remove("wallpaper-layer-hidden");
+        bannerWrapper.removeAttribute("aria-hidden");
+        bannerWrapper.removeAttribute("inert");
+    }
+}
+
 export function applyBannerToSpecShiftVariables(
     newDocument?: Document,
     root: HTMLElement = document.documentElement,
 ): void {
-    const { mainPanelShiftPx, bannerExtraShiftPx } =
+    const { mainPanelShiftPx, backgroundOvershootPx } =
         resolveBannerToSpecShiftMetrics(newDocument);
     root.style.setProperty(BANNER_TO_SPEC_SHIFT_VAR, `${mainPanelShiftPx}px`);
     root.style.setProperty(
-        BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR,
-        `${bannerExtraShiftPx}px`,
+        BANNER_TO_SPEC_BG_OVERSHOOT_VAR,
+        `${backgroundOvershootPx}px`,
     );
+}
+
+export function prepareIncomingBannerToSpecDocument(
+    targetDocument: Document,
+): void {
+    const root = targetDocument.documentElement;
+    root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
+    root.classList.add(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_NAVBAR_SYNC_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS);
+    root.style.setProperty(
+        BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
+        `${BANNER_TO_SPEC_TRANSITION_DURATION_MS}ms`,
+    );
+    root.style.removeProperty(BANNER_TO_SPEC_VT_DURATION_VAR);
+    applyBannerToSpecShiftVariables(targetDocument, root);
+    primeBannerLayoutStateForIncomingDocument(targetDocument);
 }
 
 export function setPageHeightExtendVisible(visible: boolean): void {
@@ -412,7 +670,9 @@ export type TransitionIntentDeps = {
 export type TransitionState = {
     pendingBannerToSpecRoutePath: string | null;
     pendingSidebarProfilePatch: SidebarProfilePatch | null;
+    pendingBannerWaveAnimationSnapshot: BannerWaveAnimationSnapshot | null;
     bannerToSpecAnimationStartedAt: number | null;
+    viewTransitionFinished: Promise<void> | null;
     delayedPageViewTimerId: number | null;
     didReplaceContentDuringVisit: boolean;
     didForceNavbarScrolledForBannerToSpec: boolean;
@@ -457,6 +717,7 @@ export function clearBannerToSpecTransitionVisualState(
 ): void {
     clearDelayedPageViewTimer(state);
     state.bannerToSpecAnimationStartedAt = null;
+    state.viewTransitionFinished = null;
     releaseForcedNavbarScrolledState(state);
     const root = document.documentElement;
     root.classList.remove(BANNER_TO_SPEC_TRANSITION_CLASS);
@@ -468,7 +729,7 @@ export function clearBannerToSpecTransitionVisualState(
         root.classList.remove(BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS);
     }
     root.style.removeProperty(BANNER_TO_SPEC_SHIFT_VAR);
-    root.style.removeProperty(BANNER_TO_SPEC_BANNER_EXTRA_SHIFT_VAR);
+    root.style.removeProperty(BANNER_TO_SPEC_BG_OVERSHOOT_VAR);
     root.style.removeProperty(BANNER_TO_SPEC_TRANSITION_DURATION_VAR);
     root.style.removeProperty(BANNER_TO_SPEC_VT_DURATION_VAR);
     setPageHeightExtendVisible(false);

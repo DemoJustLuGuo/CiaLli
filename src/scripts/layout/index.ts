@@ -40,6 +40,7 @@ type LayoutRuntimeWindow = Window &
         __layoutRuntimeInitialized?: boolean;
         __layoutTransitionHooksAttached?: boolean;
         __layoutHashOffsetBound?: boolean;
+        __layoutPageLifecycleBound?: boolean;
     };
 
 export function initLayoutRuntime(): void {
@@ -154,6 +155,17 @@ export function initLayoutRuntime(): void {
     }
 }
 
+function updateBannerExtendCssVar(): void {
+    let extendPx = Math.floor(
+        window.innerHeight * (BANNER_HEIGHT_EXTEND / 100),
+    );
+    extendPx = extendPx - (extendPx % 4);
+    document.documentElement.style.setProperty(
+        "--banner-height-extend",
+        `${extendPx}px`,
+    );
+}
+
 function setupHashOffsetNavigation(runtimeWindow: LayoutRuntimeWindow): void {
     if (runtimeWindow.__layoutHashOffsetBound) {
         return;
@@ -229,9 +241,6 @@ function setupHashOffsetNavigation(runtimeWindow: LayoutRuntimeWindow): void {
     runtimeWindow.__layoutHashOffsetBound = true;
 }
 
-initLayoutRuntime();
-initRunningDaysRuntime();
-
 // ---------------------------------------------------------------------------
 // Dynamic page-specific initialization
 //
@@ -284,21 +293,30 @@ const runDynamicPageInit = async (): Promise<void> => {
     }
 };
 
-void runDynamicPageInit();
-document.addEventListener("astro:after-swap", () => {
-    resetBannerCarousel();
+function bindPageLifecycle(runtimeWindow: LayoutRuntimeWindow): void {
+    if (runtimeWindow.__layoutPageLifecycleBound) {
+        return;
+    }
 
-    let extendPx = Math.floor(
-        window.innerHeight * (BANNER_HEIGHT_EXTEND / 100),
-    );
-    extendPx = extendPx - (extendPx % 4);
-    document.documentElement.style.setProperty(
-        "--banner-height-extend",
-        `${extendPx}px`,
-    );
+    document.addEventListener("astro:after-swap", () => {
+        resetBannerCarousel();
+        updateBannerExtendCssVar();
+    });
 
+    document.addEventListener("astro:page-load", () => {
+        updateBannerExtendCssVar();
+        showBanner();
+        void runDynamicPageInit();
+    });
+
+    runtimeWindow.__layoutPageLifecycleBound = true;
+}
+
+export function bootstrapLayoutRuntime(): void {
+    const runtimeWindow = window as LayoutRuntimeWindow;
+    initLayoutRuntime();
+    initRunningDaysRuntime();
+    bindPageLifecycle(runtimeWindow);
+    updateBannerExtendCssVar();
     void runDynamicPageInit();
-});
-document.addEventListener("astro:page-load", () => {
-    showBanner();
-});
+}

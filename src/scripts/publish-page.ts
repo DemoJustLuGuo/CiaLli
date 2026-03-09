@@ -70,12 +70,63 @@ const DEFAULT_BODY_PLACEHOLDER = t(I18nKey.articleEditorBodyPlaceholder);
 let disposeActivePublishPage: (() => void) | null = null;
 let activePublishPageController: AbortController | null = null;
 
+type InitialPublishAuthSnapshot = {
+    isAuthenticated: boolean;
+    isAdmin: boolean;
+    userId: string;
+    username: string;
+};
+
+function resolveInitialPublishAuthSnapshot(
+    root: HTMLElement,
+): InitialPublishAuthSnapshot | null {
+    if (root.dataset.initialAuthenticated !== "true") {
+        return null;
+    }
+
+    return {
+        isAuthenticated: true,
+        isAdmin: root.dataset.initialIsAdmin === "true",
+        userId: String(root.dataset.initialUserId || ""),
+        username: String(root.dataset.initialUsername || ""),
+    };
+}
+
+function seedInitialPublishAuthState(
+    root: HTMLElement,
+    workspaceEl: HTMLElement,
+): void {
+    const snapshot = resolveInitialPublishAuthSnapshot(root);
+    if (!snapshot?.isAuthenticated) {
+        return;
+    }
+
+    // /posts/new 与 /edit 已经在服务端做过鉴权，首刷时先用服务端快照解锁工作区，
+    // 避免等待 auth cache/Monaco 首次加载期间整页只剩标题。
+    const cachedAuth = getAuthState();
+    emitAuthState({
+        isLoggedIn: true,
+        isAdmin: cachedAuth.isAdmin || snapshot.isAdmin,
+        userId: snapshot.userId || cachedAuth.userId,
+        username: snapshot.username || cachedAuth.username,
+    });
+    workspaceEl.classList.remove("hidden");
+}
+
 function normalizeEditorArticleStatus(
     value: unknown,
 ): PublishState["currentStatus"] {
     return value === "draft" || value === "published" || value === "archived"
         ? value
         : "";
+}
+
+function isPublishEditorPath(pathname: string): boolean {
+    const normalizedPath = pathname.replace(/\/+$/, "") || "/";
+    return (
+        normalizedPath === "/posts/new" ||
+        /^\/posts\/[^/]+\/edit$/.test(normalizedPath)
+    );
 }
 
 function buildPublishDraftSnapshot(
@@ -577,10 +628,14 @@ async function initPublishPageCore(): Promise<void> {
     }
 
     const root = document.getElementById("publish-root");
-    if (!root || root.dataset.publishBound === "1") {
+    if (
+        !root ||
+        root.dataset.publishBound === "pending" ||
+        root.dataset.publishBound === "1"
+    ) {
         return;
     }
-    root.dataset.publishBound = "1";
+    root.dataset.publishBound = "pending";
     disposeActivePublishPage?.();
     activePublishPageController?.abort();
     activePublishPageController = null;
@@ -588,8 +643,10 @@ async function initPublishPageCore(): Promise<void> {
     const runtimeWindow = window as PublishRuntimeWindow;
     const dom = collectDomRefs();
     if (!dom) {
+        root.dataset.publishBound = "";
         return;
     }
+    seedInitialPublishAuthState(root, dom.workspaceEl);
 
     let editor: PublishEditorAdapter;
     try {
@@ -598,11 +655,13 @@ async function initPublishPageCore(): Promise<void> {
             monacoHostEl: dom.editorMonacoEl,
         });
     } catch (error) {
+        root.dataset.publishBound = "";
         console.error("[publish] monaco init failed:", error);
         dom.submitErrorEl.textContent = t(I18nKey.articleEditorLoadFailedRetry);
         dom.submitErrorEl.classList.remove("hidden");
         return;
     }
+    root.dataset.publishBound = "1";
 
     const initialIdFromUrl = root.dataset.articleId || "";
     const clientShortId = generateClientShortId();
@@ -906,6 +965,11 @@ async function initPublishPageCore(): Promise<void> {
 }
 
 export function initPublishPage(): void {
+    if (isPublishEditorPath(window.location.pathname)) {
+        // 首次完整加载时优先直启当前页，避免只依赖 page-load 监听导致首刷漏初始化。
+        void initPublishPageCore();
+    }
+
     setupPageInit({
         key: "publish-page",
         init: () => {
@@ -913,5 +977,6 @@ export function initPublishPage(): void {
         },
         delay: 0,
         runOnPageShow: true,
+        stages: ["page-load"],
     });
 }

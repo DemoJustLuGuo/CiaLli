@@ -345,6 +345,7 @@ const bootstrap = (): void => {
         },
         delay: 50,
         runOnPageShow: true,
+        stages: ["navigation-settled"],
     });
 
     document.addEventListener("cialli:page:loaded", () => {

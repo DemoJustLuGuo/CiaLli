@@ -1,24 +1,27 @@
+/* eslint-disable max-lines -- 该文件集中承载导航过渡状态机与 Astro 生命周期衔接逻辑。 */
 import type { LayoutController } from "./layout-controller";
 import {
     applySidebarProfilePatch,
     syncSidebarAvatarLoadingState,
 } from "./sidebar-profile-sync";
 import {
-    activateEnterSkeleton,
     deactivateEnterSkeleton,
     forceResetEnterSkeleton,
-    isEnterSkeletonActive,
     syncEnterSkeletonStateToIncomingDocument,
 } from "./enter-skeleton";
 import { scrollToHashBelowTocBaseline } from "@/utils/hash-scroll";
 import {
+    applyBannerWaveAnimationSnapshot,
     isCurrentHomeRoute,
     normalizePathname,
     isSameNavigationTarget,
+    bridgeCurrentBannerToIncomingDocument,
+    captureBannerWaveAnimationSnapshot,
+    primeBannerWaveAnimationSnapshot,
+    shouldStartBannerToSpecTransition,
     stripOnloadAnimationClasses,
-    setBannerToSpecViewTransitionNames,
     freezeSpecLayoutStateForHomeDocument,
-    applyBannerToSpecShiftVariables,
+    prepareIncomingBannerToSpecDocument,
     syncRootRuntimeStateToIncomingDocument,
     setPageHeightExtendVisible,
     setAwaitingReplaceState,
@@ -27,7 +30,6 @@ import {
     getBannerToSpecRemainingMs,
     clearBannerToSpecTransitionVisualState,
     startBannerToSpecMoveTransition,
-    applyVtDurationFromElapsed,
     dispatchRouteChangeWithNavbarCommitFreeze,
     resolveExpectedThemeState,
     applyThemeStateToRoot,
@@ -50,6 +52,9 @@ type BeforePreparationEvent = Event & {
 
 type BeforeSwapEvent = Event & {
     newDocument: Document;
+    viewTransition?: {
+        finished: Promise<unknown>;
+    };
     swap: () => void;
 };
 
@@ -118,8 +123,10 @@ function dispatchNavigationSettledEvent(navigationToken: number): void {
 function resetNavigationState(state: TransitionState): void {
     state.pendingBannerToSpecRoutePath = null;
     state.pendingSidebarProfilePatch = null;
+    state.pendingBannerWaveAnimationSnapshot = null;
     state.pendingSpecToBannerFreeze = false;
     state.bannerToSpecAnimationStartedAt = null;
+    state.viewTransitionFinished = null;
 }
 
 function forceResetTransitionState(state: TransitionState): void {
@@ -138,17 +145,13 @@ function applyBannerToSpecTransitionSetup(
 ): void {
     state.pendingBannerToSpecRoutePath = targetPathname;
     const root = document.documentElement;
-    applyBannerToSpecShiftVariables(undefined, root);
     root.style.setProperty(
         BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
         `${BANNER_TO_SPEC_TRANSITION_DURATION_MS}ms`,
     );
     root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
     root.classList.add(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
-    setBannerToSpecViewTransitionNames(document);
     setPageHeightExtendVisible(true);
-    void root.offsetHeight;
-    startBannerToSpecMoveTransition(state);
 }
 
 // ===== Before-preparation event handler =====
@@ -204,9 +207,15 @@ function handleBeforePreparation(
     const currentIsHome =
         deps.pathsEqual(currentPathname, deps.url("/")) ||
         isCurrentHomeRoute(body);
-    const hasBannerWrapper = document.getElementById("banner-wrapper");
-    const shouldUseBannerToSpec =
-        currentIsHome && hasBannerWrapper !== null && !isTargetHome;
+    const currentBannerWrapper = document.getElementById(
+        "banner-wrapper",
+    ) as HTMLElement | null;
+    const shouldUseBannerToSpec = shouldStartBannerToSpecTransition({
+        currentIsHome,
+        isTargetHome,
+        body,
+        bannerWrapper: currentBannerWrapper,
+    });
 
     if (shouldUseBannerToSpec) {
         applyBannerToSpecTransitionSetup(state, targetPathname);
@@ -225,7 +234,7 @@ function handleBeforePreparation(
         toc.classList.add("toc-not-ready");
     }
 
-    activateEnterSkeleton();
+    // 整页骨架只打到 incoming 文档，避免 outgoing 页面先闪成骨架。
 }
 
 // ===== Before-swap event handler =====
@@ -236,6 +245,12 @@ function handleBeforeSwap(
     deps: TransitionIntentSourceDependencies,
 ): void {
     const newDocument = e.newDocument;
+    state.viewTransitionFinished = e.viewTransition
+        ? Promise.resolve(e.viewTransition.finished).then(
+              () => undefined,
+              () => undefined,
+          )
+        : null;
 
     stripOnloadAnimationsInDocument(document);
 
@@ -264,24 +279,28 @@ function handleBeforeSwap(
         state.pendingSidebarProfilePatch = result.patch;
     }
 
-    if (
-        state.pendingBannerToSpecRoutePath &&
-        state.bannerToSpecAnimationStartedAt === null
-    ) {
-        applyBannerToSpecShiftVariables(newDocument);
+    if (state.pendingBannerToSpecRoutePath) {
+        state.pendingBannerWaveAnimationSnapshot =
+            captureBannerWaveAnimationSnapshot();
+        bridgeCurrentBannerToIncomingDocument(newDocument);
+        prepareIncomingBannerToSpecDocument(newDocument);
+        primeBannerWaveAnimationSnapshot(
+            state.pendingBannerWaveAnimationSnapshot,
+            newDocument,
+        );
     }
-
-    applyVtDurationFromElapsed(state, newDocument);
 
     const savedSidebar = shouldPreserveSidebar
         ? document.querySelector<HTMLElement>("#sidebar")
         : null;
-    const capturedBannerPath = state.pendingBannerToSpecRoutePath;
     const capturedSpecFreeze = state.pendingSpecToBannerFreeze;
 
     const originalSwap = e.swap;
     e.swap = () => {
         originalSwap();
+        applyBannerWaveAnimationSnapshot(
+            state.pendingBannerWaveAnimationSnapshot,
+        );
         setNavigationPhase("swapped");
         if (savedSidebar) {
             const inDom = document.querySelector("#sidebar");
@@ -289,13 +308,59 @@ function handleBeforeSwap(
                 inDom.replaceWith(savedSidebar);
             }
         }
-        if (capturedBannerPath) {
-            setBannerToSpecViewTransitionNames(document);
-        }
         if (capturedSpecFreeze) {
             freezeSpecLayoutStateForHomeDocument();
         }
     };
+}
+
+async function finalizePageViewWhenReady(
+    state: TransitionState,
+    transitionDeps: TransitionIntentDeps,
+    sourceDeps: TransitionIntentSourceDependencies,
+    runtimeWindow: RuntimeWindowWithTOC,
+    navigationToken: number,
+): Promise<void> {
+    if (state.viewTransitionFinished) {
+        await state.viewTransitionFinished;
+    }
+
+    if (
+        navigationToken !== state.navigationToken ||
+        !state.navigationInProgress
+    ) {
+        return;
+    }
+
+    const remainingMs = getBannerToSpecRemainingMs(state);
+    if (remainingMs > 0) {
+        clearDelayedPageViewTimer(state);
+        state.delayedPageViewTimerId = window.setTimeout(() => {
+            state.delayedPageViewTimerId = null;
+            if (
+                navigationToken !== state.navigationToken ||
+                !state.navigationInProgress
+            ) {
+                return;
+            }
+            finalizePageView(
+                state,
+                transitionDeps,
+                sourceDeps,
+                runtimeWindow,
+                navigationToken,
+            );
+        }, Math.ceil(remainingMs));
+        return;
+    }
+
+    finalizePageView(
+        state,
+        transitionDeps,
+        sourceDeps,
+        runtimeWindow,
+        navigationToken,
+    );
 }
 
 // ===== After-swap event handler =====
@@ -304,9 +369,6 @@ function handleAfterSwap(state: TransitionState): void {
     state.didReplaceContentDuringVisit = true;
     setAwaitingReplaceState(false);
     setNavigationPhase("swapped");
-    if (!isEnterSkeletonActive()) {
-        activateEnterSkeleton();
-    }
 
     if (state.pendingSidebarProfilePatch) {
         applySidebarProfilePatch(state.pendingSidebarProfilePatch);
@@ -315,7 +377,16 @@ function handleAfterSwap(state: TransitionState): void {
     syncSidebarAvatarLoadingState(document);
 
     if (state.pendingBannerToSpecRoutePath) {
-        startBannerToSpecMoveTransition(state);
+        applyBannerWaveAnimationSnapshot(
+            state.pendingBannerWaveAnimationSnapshot,
+        );
+        requestAnimationFrame(() => {
+            if (!state.navigationInProgress) {
+                return;
+            }
+            state.pendingBannerWaveAnimationSnapshot = null;
+            startBannerToSpecMoveTransition(state);
+        });
     }
 }
 
@@ -380,6 +451,9 @@ function finalizePageView(
     clearBannerToSpecTransitionVisualState(state, {
         preserveNavbarCommitFreeze: didUseNavbarCommitFreeze,
     });
+    state.pendingBannerToSpecRoutePath = null;
+    state.pendingSidebarProfilePatch = null;
+    state.pendingSpecToBannerFreeze = false;
     const isHomePage = transitionDeps.pathsEqual(
         window.location.pathname,
         transitionDeps.url("/"),
@@ -469,30 +543,7 @@ function handlePageLoad(
         return;
     }
     const navigationToken = state.navigationToken;
-
-    const remainingMs = getBannerToSpecRemainingMs(state);
-    if (remainingMs > 0) {
-        clearDelayedPageViewTimer(state);
-        state.delayedPageViewTimerId = window.setTimeout(() => {
-            state.delayedPageViewTimerId = null;
-            if (
-                navigationToken !== state.navigationToken ||
-                !state.navigationInProgress
-            ) {
-                return;
-            }
-            finalizePageView(
-                state,
-                transitionDeps,
-                sourceDeps,
-                runtimeWindow,
-                navigationToken,
-            );
-        }, Math.ceil(remainingMs));
-        return;
-    }
-
-    finalizePageView(
+    void finalizePageViewWhenReady(
         state,
         transitionDeps,
         sourceDeps,
@@ -512,7 +563,9 @@ export function setupTransitionIntentSource(
     const state: TransitionState = {
         pendingBannerToSpecRoutePath: null,
         pendingSidebarProfilePatch: null,
+        pendingBannerWaveAnimationSnapshot: null,
         bannerToSpecAnimationStartedAt: null,
+        viewTransitionFinished: null,
         delayedPageViewTimerId: null,
         didReplaceContentDuringVisit: false,
         didForceNavbarScrolledForBannerToSpec: false,
