@@ -3,6 +3,7 @@ import BackToTop from "@components/control/BackToTop.astro";
 import FloatingTOC from "@components/control/FloatingTOC.astro";
 import Footer from "@components/Footer.astro";
 import RightSideBar from "@components/layout/RightSideBar.astro";
+import TransitionProxySkeletonTemplates from "@components/layout/TransitionProxySkeletonTemplates.astro";
 import Navbar from "@components/Navbar.astro";
 import SideBar from "@components/widget/SideBar.astro";
 import type { MarkdownHeading } from "astro";
@@ -337,6 +338,14 @@ const {
         )
       }
     </div>
+    <div
+      id="main-panel-transition-proxy"
+      class="main-panel-transition-proxy"
+      aria-hidden="true"
+      transition:persist
+    >
+    </div>
+    <TransitionProxySkeletonTemplates />
     <div
       class:list={[
         "main-panel-content-layer",

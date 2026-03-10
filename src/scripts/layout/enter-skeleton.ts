@@ -1,11 +1,13 @@
-type EnterSkeletonMode =
+export type EnterSkeletonMode =
     | "post-card"
     | "post-detail"
+    | "diary-detail"
     | "publish-page"
     | "user-home"
     | "user-bangumi"
     | "user-albums"
     | "user-diary"
+    | "me-homepage"
     | "admin-dashboard"
     | "admin-users"
     | "admin-site-settings"
@@ -21,6 +23,24 @@ type EnterSkeletonMode =
     | "rss-page"
     | "atom-page"
     | "fallback";
+
+export type TransitionProxyLayoutKey =
+    | "sidebar-main"
+    | "sidebar-main-right-default"
+    | "sidebar-main-right-archive"
+    | "sidebar-main-right-bangumi"
+    | "sidebar-main-right-albums"
+    | "full-width-post-editor";
+
+export type TransitionProxyPayload = {
+    mode: EnterSkeletonMode;
+    layoutKey: TransitionProxyLayoutKey;
+};
+
+type SkeletonPathRule = {
+    test: RegExp;
+    mode: EnterSkeletonMode;
+};
 
 const ACTIVE_CLASS = "enter-skeleton-active";
 const MODE_ATTR = "data-enter-skeleton-mode";
@@ -79,6 +99,10 @@ const SKELETON_PAGE_RULES: SkeletonDetectRule[] = [
         mode: "user-diary",
     },
     {
+        selector: '[data-enter-skeleton-page="me-homepage"]',
+        mode: "me-homepage",
+    },
+    {
         selector: '[data-enter-skeleton-page="admin-dashboard"]',
         mode: "admin-dashboard",
     },
@@ -129,6 +153,41 @@ const SKELETON_PAGE_RULES: SkeletonDetectRule[] = [
     { selector: '[data-enter-skeleton-page="rss-page"]', mode: "rss-page" },
     { selector: '[data-enter-skeleton-page="atom-page"]', mode: "atom-page" },
 ];
+
+const SKELETON_PATH_RULES: readonly SkeletonPathRule[] = [
+    { test: /^\/posts\/new$/, mode: "publish-page" },
+    { test: /^\/posts\/[^/]+\/edit$/, mode: "publish-page" },
+    { test: /^\/posts$/, mode: "post-card" },
+    { test: /^\/posts\/[^/]+$/, mode: "post-detail" },
+    { test: /^\/[^/]+\/diary\/[^/]+$/, mode: "diary-detail" },
+    { test: /^\/[^/]+\/bangumi$/, mode: "user-bangumi" },
+    { test: /^\/[^/]+\/albums$/, mode: "user-albums" },
+    { test: /^\/[^/]+\/diary$/, mode: "user-diary" },
+    { test: /^\/admin\/settings\/site$/, mode: "admin-site-settings" },
+    {
+        test: /^\/admin\/settings\/bulletin$/,
+        mode: "admin-bulletin-settings",
+    },
+    { test: /^\/admin\/settings\/about$/, mode: "admin-about-settings" },
+    { test: /^\/admin\/users$/, mode: "admin-users" },
+    { test: /^\/admin$/, mode: "admin-dashboard" },
+    { test: /^\/me\/homepage$/, mode: "me-homepage" },
+    { test: /^\/me$/, mode: "me-settings" },
+    { test: /^\/about$/, mode: "about-page" },
+    { test: /^\/friends$/, mode: "friends-page" },
+    { test: /^\/stats$/, mode: "stats-page" },
+    { test: /^\/bulletin$/, mode: "bulletin-page" },
+    { test: /^\/auth\/login$/, mode: "auth-login" },
+    { test: /^\/auth\/register$/, mode: "auth-register" },
+    { test: /^\/rss$/, mode: "rss-page" },
+    { test: /^\/atom$/, mode: "atom-page" },
+    { test: /^\/[^/]+$/, mode: "user-home" },
+] as const;
+
+function normalizeSkeletonPath(pathname: string): string {
+    const normalized = String(pathname || "").replace(/\/+$/, "");
+    return normalized === "" ? "/" : normalized;
+}
 
 function matchSkeletonRule(
     rules: SkeletonDetectRule[],
@@ -253,4 +312,52 @@ export function syncEnterSkeletonStateToIncomingDocument(
         return;
     }
     prepareEnterSkeletonForIncomingDocument(newDocument);
+}
+
+export function resolveEnterSkeletonModeFromPath(
+    pathname: string,
+): EnterSkeletonMode {
+    const normalizedPath = normalizeSkeletonPath(pathname);
+    for (const rule of SKELETON_PATH_RULES) {
+        if (rule.test.test(normalizedPath)) {
+            return rule.mode;
+        }
+    }
+    return "fallback";
+}
+
+export function resolveTransitionProxyLayoutKeyFromPath(
+    pathname: string,
+    mode: EnterSkeletonMode = resolveEnterSkeletonModeFromPath(pathname),
+): TransitionProxyLayoutKey {
+    const normalizedPath = normalizeSkeletonPath(pathname);
+    if (
+        normalizedPath === "/posts/new" ||
+        /^\/posts\/[^/]+\/edit$/.test(normalizedPath)
+    ) {
+        return "full-width-post-editor";
+    }
+    if (normalizedPath === "/posts") {
+        return "sidebar-main-right-archive";
+    }
+    if (/^\/[^/]+\/bangumi$/.test(normalizedPath)) {
+        return "sidebar-main-right-bangumi";
+    }
+    if (/^\/[^/]+\/albums$/.test(normalizedPath)) {
+        return "sidebar-main-right-albums";
+    }
+    if (mode === "post-detail") {
+        return "sidebar-main-right-default";
+    }
+    return "sidebar-main";
+}
+
+export function resolveTransitionProxyPayloadFromPath(
+    pathname: string,
+): TransitionProxyPayload {
+    const mode = resolveEnterSkeletonModeFromPath(pathname);
+    return {
+        mode,
+        layoutKey: resolveTransitionProxyLayoutKeyFromPath(pathname, mode),
+    };
 }

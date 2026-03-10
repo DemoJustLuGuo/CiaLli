@@ -4,6 +4,13 @@ import {
     extractSidebarProfilePatch,
     type SidebarProfilePatch,
 } from "./sidebar-profile-sync";
+import {
+    resolveEnterSkeletonModeFromPath,
+    resolveTransitionProxyLayoutKeyFromPath,
+    type EnterSkeletonMode,
+    type TransitionProxyLayoutKey,
+    type TransitionProxyPayload,
+} from "./enter-skeleton";
 import type { LayoutController } from "./layout-controller";
 
 const COLLAPSED_MAIN_PANEL_TOP_VALUE = "5.5rem";
@@ -16,12 +23,20 @@ export const BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS =
     "layout-banner-to-spec-transition-preparing";
 export const BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS =
     "layout-banner-to-spec-transition-active";
+export const BANNER_TO_SPEC_LIVE_CLASS = "layout-banner-to-spec-live-active";
+export const BANNER_TO_SPEC_SETTLED_CLASS = "layout-banner-to-spec-settled";
 export const BANNER_TO_SPEC_NAVBAR_SYNC_CLASS =
     "layout-banner-to-spec-navbar-sync";
 export const BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS =
     "layout-banner-to-spec-navbar-commit-freeze";
 export const SPEC_TO_BANNER_TRANSITION_CLASS =
     "layout-spec-to-banner-transition";
+export const BANNER_TO_SPEC_PROXY_VISIBLE_CLASS =
+    "layout-banner-to-spec-proxy-visible";
+export const BANNER_TO_SPEC_PROXY_ENTERING_CLASS =
+    "layout-banner-to-spec-proxy-entering";
+export const BANNER_TO_SPEC_PROXY_REVEALING_CLASS =
+    "layout-banner-to-spec-proxy-revealing";
 export const BANNER_TO_SPEC_SHIFT_VAR = "--layout-banner-route-up-shift";
 export const BANNER_TO_SPEC_BG_OVERSHOOT_VAR =
     "--layout-banner-route-bg-overshoot";
@@ -30,9 +45,13 @@ export const BANNER_TO_SPEC_TRANSITION_DURATION_VAR =
 export const BANNER_TO_SPEC_VT_DURATION_VAR =
     "--layout-banner-route-vt-duration";
 export const BANNER_TO_SPEC_MAIN_PANEL_VT_NAME = "banner-route-main-panel";
+export const BANNER_TO_SPEC_PROXY_MODE_ATTR = "data-banner-route-proxy-mode";
+export const TRANSITION_PROXY_LAYOUT_ATTR = "data-transition-proxy-layout";
 export const ENTER_SKELETON_AWAITING_REPLACE_CLASS =
     "enter-skeleton-awaiting-replace";
 export const BANNER_TO_SPEC_TRANSITION_DURATION_MS = 980;
+export const BANNER_TO_SPEC_PROXY_ENTER_DURATION_MS = 180;
+export const BANNER_TO_SPEC_PROXY_REVEAL_DURATION_MS = 280;
 export const ROOT_RUNTIME_CLASSES_TO_PRESERVE = [
     "dark",
     "is-theme-transitioning",
@@ -42,14 +61,19 @@ export const ROOT_RUNTIME_CLASSES_TO_PRESERVE = [
     BANNER_TO_SPEC_TRANSITION_CLASS,
     BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS,
     BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS,
+    BANNER_TO_SPEC_SETTLED_CLASS,
     BANNER_TO_SPEC_NAVBAR_SYNC_CLASS,
     BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS,
     SPEC_TO_BANNER_TRANSITION_CLASS,
+    BANNER_TO_SPEC_PROXY_VISIBLE_CLASS,
+    BANNER_TO_SPEC_PROXY_ENTERING_CLASS,
+    BANNER_TO_SPEC_PROXY_REVEALING_CLASS,
 ] as const;
 export const ROOT_RUNTIME_STYLE_PROPERTIES_TO_PRESERVE = [
     "font-size",
     "--hue",
     "--banner-height-extend",
+    BANNER_TO_SPEC_SHIFT_VAR,
     BANNER_TO_SPEC_BG_OVERSHOOT_VAR,
     BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
 ] as const;
@@ -58,6 +82,8 @@ export const ROOT_RUNTIME_DATA_ATTRIBUTES_TO_PRESERVE = [
     "data-desktop-force-browse",
     "data-enter-skeleton-mode",
     "data-nav-phase",
+    BANNER_TO_SPEC_PROXY_MODE_ATTR,
+    TRANSITION_PROXY_LAYOUT_ATTR,
 ] as const;
 
 export type BannerWaveLayerSnapshot = {
@@ -225,6 +251,205 @@ export function resolveBannerToSpecShiftMetrics(
         targetTop,
         sidebarTops,
     });
+}
+
+function getProxyHost(targetDocument: Document = document): HTMLElement | null {
+    return targetDocument.getElementById(
+        "main-panel-transition-proxy",
+    ) as HTMLElement | null;
+}
+
+function getProxyContentTemplate(
+    mode: EnterSkeletonMode,
+    targetDocument: Document = document,
+): HTMLTemplateElement | null {
+    const selector = `[data-transition-proxy-template="${mode}"]`;
+    return targetDocument.querySelector<HTMLTemplateElement>(selector);
+}
+
+function getProxyShellTemplate(
+    layoutKey: TransitionProxyLayoutKey,
+    targetDocument: Document = document,
+): HTMLTemplateElement | null {
+    const selector = `[data-transition-proxy-shell="${layoutKey}"]`;
+    return targetDocument.querySelector<HTMLTemplateElement>(selector);
+}
+
+function clearChildNodes(target: HTMLElement): void {
+    while (target.firstChild) {
+        target.removeChild(target.firstChild);
+    }
+}
+
+export function resolveTransitionProxyPayloadFromDocument(
+    targetDocument: Document,
+    fallbackPathname?: string,
+): TransitionProxyPayload {
+    const resolvedMode = fallbackPathname
+        ? resolveEnterSkeletonModeFromPath(fallbackPathname)
+        : "fallback";
+    if (
+        targetDocument.querySelector('[data-enter-skeleton-page="auth-login"]')
+    ) {
+        return {
+            mode: resolvedMode,
+            layoutKey: "sidebar-main",
+        };
+    }
+    if (
+        targetDocument.querySelector(
+            '[data-enter-skeleton-page="auth-register"]',
+        )
+    ) {
+        return {
+            mode: resolvedMode,
+            layoutKey: "sidebar-main",
+        };
+    }
+    if (
+        targetDocument.documentElement.classList.contains(
+            "route-post-editor",
+        ) ||
+        targetDocument.body.dataset.routePostEditor === "true"
+    ) {
+        return {
+            mode: resolvedMode,
+            layoutKey: "full-width-post-editor",
+        };
+    }
+    if (targetDocument.querySelector(".archive-filter-panel")) {
+        return {
+            mode: resolvedMode,
+            layoutKey: "sidebar-main-right-archive",
+        };
+    }
+    if (targetDocument.querySelector(".bangumi-filter-panel")) {
+        return {
+            mode: resolvedMode,
+            layoutKey: "sidebar-main-right-bangumi",
+        };
+    }
+    if (targetDocument.querySelector(".album-filter-panel")) {
+        return {
+            mode: resolvedMode,
+            layoutKey: "sidebar-main-right-albums",
+        };
+    }
+    const rightSidebarSlot =
+        targetDocument.getElementById("right-sidebar-slot");
+    const hasVisibleRightSidebar = Boolean(
+        rightSidebarSlot instanceof HTMLElement &&
+        !rightSidebarSlot.classList.contains("hidden") &&
+        rightSidebarSlot.children.length > 0,
+    );
+    return {
+        mode: resolvedMode,
+        layoutKey: hasVisibleRightSidebar
+            ? "sidebar-main-right-default"
+            : resolveTransitionProxyLayoutKeyFromPath(
+                  fallbackPathname || "/",
+                  resolvedMode,
+              ),
+    };
+}
+
+export function applyTransitionProxySkeleton(
+    payload: TransitionProxyPayload,
+    targetDocument: Document = document,
+): boolean {
+    const host = getProxyHost(targetDocument);
+    if (!(host instanceof HTMLElement)) {
+        return false;
+    }
+    const shellTemplate =
+        getProxyShellTemplate(payload.layoutKey, targetDocument) ??
+        getProxyShellTemplate("sidebar-main", targetDocument);
+    const contentTemplate =
+        getProxyContentTemplate(payload.mode, targetDocument) ??
+        getProxyContentTemplate("fallback", targetDocument);
+    if (
+        !(shellTemplate instanceof HTMLTemplateElement) ||
+        !(contentTemplate instanceof HTMLTemplateElement)
+    ) {
+        return false;
+    }
+
+    // 代理骨架在当前文档与 incoming 文档之间共用同一份模板来源，
+    // 避免点击瞬间和 swap 后各自临时拼装不同骨架而产生闪烁。
+    const shellFragment = shellTemplate.content.cloneNode(
+        true,
+    ) as DocumentFragment;
+    const mainSlot = shellFragment.querySelector<HTMLElement>(
+        "[data-transition-proxy-main-slot]",
+    );
+    if (!(mainSlot instanceof HTMLElement)) {
+        return false;
+    }
+    mainSlot.appendChild(contentTemplate.content.cloneNode(true));
+
+    clearChildNodes(host);
+    host.appendChild(shellFragment);
+    targetDocument.documentElement.setAttribute(
+        BANNER_TO_SPEC_PROXY_MODE_ATTR,
+        payload.mode,
+    );
+    targetDocument.documentElement.setAttribute(
+        TRANSITION_PROXY_LAYOUT_ATTR,
+        payload.layoutKey,
+    );
+    return true;
+}
+
+export function clearTransitionProxySkeleton(
+    targetDocument: Document = document,
+): void {
+    const host = getProxyHost(targetDocument);
+    if (host instanceof HTMLElement) {
+        clearChildNodes(host);
+    }
+    targetDocument.documentElement.removeAttribute(
+        BANNER_TO_SPEC_PROXY_MODE_ATTR,
+    );
+    targetDocument.documentElement.removeAttribute(
+        TRANSITION_PROXY_LAYOUT_ATTR,
+    );
+}
+
+export function mountTransitionProxy(
+    targetDocument: Document = document,
+): void {
+    const proxyHost = getProxyHost(targetDocument);
+    if (proxyHost instanceof HTMLElement) {
+        proxyHost.removeAttribute("hidden");
+    }
+}
+
+export function startTransitionProxyEnter(
+    targetDocument: Document = document,
+): void {
+    mountTransitionProxy(targetDocument);
+    const root = targetDocument.documentElement;
+    root.classList.add(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS);
+    root.classList.add(BANNER_TO_SPEC_PROXY_ENTERING_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_PROXY_REVEALING_CLASS);
+}
+
+export function settleTransitionProxyEnter(
+    targetDocument: Document = document,
+): void {
+    targetDocument.documentElement.classList.remove(
+        BANNER_TO_SPEC_PROXY_ENTERING_CLASS,
+    );
+}
+
+export function startTransitionProxyReveal(
+    targetDocument: Document = document,
+): void {
+    mountTransitionProxy(targetDocument);
+    const root = targetDocument.documentElement;
+    root.classList.remove(BANNER_TO_SPEC_PROXY_ENTERING_CLASS);
+    root.classList.add(BANNER_TO_SPEC_PROXY_REVEALING_CLASS);
+    root.classList.add(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS);
 }
 
 // ===== DOM helpers =====
@@ -669,9 +894,21 @@ export type TransitionIntentDeps = {
 
 export type TransitionState = {
     pendingBannerToSpecRoutePath: string | null;
+    pendingTransitionProxyRoutePath: string | null;
     pendingSidebarProfilePatch: SidebarProfilePatch | null;
     pendingBannerWaveAnimationSnapshot: BannerWaveAnimationSnapshot | null;
     bannerToSpecAnimationStartedAt: number | null;
+    bannerToSpecMotionDurationMs: number;
+    transitionProxyMode: EnterSkeletonMode | null;
+    transitionProxyLayoutKey: TransitionProxyLayoutKey | null;
+    bannerToSpecMotionCompleted: boolean;
+    bannerToSpecMotionPromise: Promise<void> | null;
+    bannerToSpecMotionResolve: (() => void) | null;
+    bannerToSpecMotionTimerId: number | null;
+    bannerToSpecLoaderSettled: boolean;
+    proxyEnterFrameId: number | null;
+    proxyEnterTimerId: number | null;
+    proxyRevealTimerId: number | null;
     viewTransitionFinished: Promise<void> | null;
     delayedPageViewTimerId: number | null;
     didReplaceContentDuringVisit: boolean;
@@ -686,6 +923,27 @@ export function clearDelayedPageViewTimer(state: TransitionState): void {
     if (state.delayedPageViewTimerId !== null) {
         window.clearTimeout(state.delayedPageViewTimerId);
         state.delayedPageViewTimerId = null;
+    }
+}
+
+export function clearBannerToSpecMotionTimer(state: TransitionState): void {
+    if (state.bannerToSpecMotionTimerId !== null) {
+        window.clearTimeout(state.bannerToSpecMotionTimerId);
+        state.bannerToSpecMotionTimerId = null;
+    }
+}
+
+export function clearTransitionProxyEnterFrame(state: TransitionState): void {
+    if (state.proxyEnterFrameId !== null) {
+        window.cancelAnimationFrame(state.proxyEnterFrameId);
+        state.proxyEnterFrameId = null;
+    }
+}
+
+export function clearTransitionProxyEnterTimer(state: TransitionState): void {
+    if (state.proxyEnterTimerId !== null) {
+        window.clearTimeout(state.proxyEnterTimerId);
+        state.proxyEnterTimerId = null;
     }
 }
 
@@ -708,7 +966,29 @@ export function getBannerToSpecRemainingMs(state: TransitionState): number {
         return 0;
     }
     const elapsedMs = performance.now() - state.bannerToSpecAnimationStartedAt;
-    return Math.max(0, BANNER_TO_SPEC_TRANSITION_DURATION_MS - elapsedMs);
+    return Math.max(0, state.bannerToSpecMotionDurationMs - elapsedMs);
+}
+
+export function markBannerToSpecMotionCompleted(state: TransitionState): void {
+    state.bannerToSpecMotionCompleted = true;
+    clearBannerToSpecMotionTimer(state);
+    state.bannerToSpecMotionResolve?.();
+    state.bannerToSpecMotionResolve = null;
+    state.bannerToSpecMotionPromise = null;
+}
+
+export function clearTransitionProxyVisualState(
+    targetDocument: Document = document,
+): void {
+    clearTransitionProxySkeleton(targetDocument);
+    const root = targetDocument.documentElement;
+    root.classList.remove(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_PROXY_ENTERING_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_PROXY_REVEALING_CLASS);
+    const proxyHost = getProxyHost(targetDocument);
+    if (proxyHost instanceof HTMLElement) {
+        proxyHost.setAttribute("hidden", "");
+    }
 }
 
 export function clearBannerToSpecTransitionVisualState(
@@ -716,15 +996,35 @@ export function clearBannerToSpecTransitionVisualState(
     options?: { preserveNavbarCommitFreeze?: boolean },
 ): void {
     clearDelayedPageViewTimer(state);
+    clearBannerToSpecMotionTimer(state);
+    clearTransitionProxyEnterFrame(state);
+    clearTransitionProxyEnterTimer(state);
+    if (state.proxyRevealTimerId !== null) {
+        window.clearTimeout(state.proxyRevealTimerId);
+        state.proxyRevealTimerId = null;
+    }
     state.bannerToSpecAnimationStartedAt = null;
+    state.bannerToSpecMotionDurationMs = BANNER_TO_SPEC_TRANSITION_DURATION_MS;
+    state.bannerToSpecMotionCompleted = false;
+    state.bannerToSpecMotionPromise = null;
+    state.bannerToSpecMotionResolve = null;
+    state.bannerToSpecLoaderSettled = false;
+    state.transitionProxyMode = null;
+    state.transitionProxyLayoutKey = null;
+    state.pendingTransitionProxyRoutePath = null;
     state.viewTransitionFinished = null;
     releaseForcedNavbarScrolledState(state);
     const root = document.documentElement;
     root.classList.remove(BANNER_TO_SPEC_TRANSITION_CLASS);
     root.classList.remove(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
     root.classList.remove(BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_LIVE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_SETTLED_CLASS);
     root.classList.remove(BANNER_TO_SPEC_NAVBAR_SYNC_CLASS);
     root.classList.remove(SPEC_TO_BANNER_TRANSITION_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_PROXY_ENTERING_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_PROXY_REVEALING_CLASS);
     if (!options?.preserveNavbarCommitFreeze) {
         root.classList.remove(BANNER_TO_SPEC_NAVBAR_COMMIT_FREEZE_CLASS);
     }
@@ -732,6 +1032,7 @@ export function clearBannerToSpecTransitionVisualState(
     root.style.removeProperty(BANNER_TO_SPEC_BG_OVERSHOOT_VAR);
     root.style.removeProperty(BANNER_TO_SPEC_TRANSITION_DURATION_VAR);
     root.style.removeProperty(BANNER_TO_SPEC_VT_DURATION_VAR);
+    clearTransitionProxyVisualState();
     setPageHeightExtendVisible(false);
     clearBannerToSpecViewTransitionNames(document);
 }
@@ -753,9 +1054,45 @@ export function startBannerToSpecMoveTransition(state: TransitionState): void {
         state.didForceNavbarScrolledForBannerToSpec = true;
     }
     root.classList.remove(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
-    root.classList.add(BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_SETTLED_CLASS);
+    root.classList.add(BANNER_TO_SPEC_LIVE_CLASS);
     root.classList.add(BANNER_TO_SPEC_NAVBAR_SYNC_CLASS);
+    const motionDurationMs = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+    ).matches
+        ? 0
+        : BANNER_TO_SPEC_TRANSITION_DURATION_MS;
+    root.style.setProperty(
+        BANNER_TO_SPEC_TRANSITION_DURATION_VAR,
+        `${motionDurationMs}ms`,
+    );
     state.bannerToSpecAnimationStartedAt = performance.now();
+    state.bannerToSpecMotionDurationMs = motionDurationMs;
+    state.bannerToSpecMotionCompleted = false;
+    state.bannerToSpecMotionPromise = new Promise<void>((resolve) => {
+        state.bannerToSpecMotionResolve = resolve;
+    });
+    clearBannerToSpecMotionTimer(state);
+    if (motionDurationMs <= 0) {
+        markBannerToSpecMotionCompleted(state);
+        return;
+    }
+    state.bannerToSpecMotionTimerId = window.setTimeout(() => {
+        markBannerToSpecMotionCompleted(state);
+    }, motionDurationMs);
+}
+
+export function setIncomingBannerToSpecSettledState(
+    targetDocument: Document,
+): void {
+    const root = targetDocument.documentElement;
+    root.classList.add(BANNER_TO_SPEC_TRANSITION_CLASS);
+    root.classList.add(BANNER_TO_SPEC_SETTLED_CLASS);
+    root.classList.add(BANNER_TO_SPEC_NAVBAR_SYNC_CLASS);
+    root.classList.add(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_TRANSITION_PREPARING_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_TRANSITION_ACTIVE_CLASS);
+    root.classList.remove(BANNER_TO_SPEC_LIVE_CLASS);
 }
 
 export function dispatchRouteChangeWithNavbarCommitFreeze(

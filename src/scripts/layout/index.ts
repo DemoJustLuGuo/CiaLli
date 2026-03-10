@@ -33,10 +33,13 @@ const BANNER_HEIGHT = 35;
 const BANNER_HEIGHT_EXTEND = 30;
 const BANNER_HEIGHT_HOME = BANNER_HEIGHT + BANNER_HEIGHT_EXTEND;
 const ALBUM_GALLERY_READY_EVENT = "cialli:album-gallery:ready";
+const BANNER_TO_SPEC_TRANSITION_CLASS = "layout-banner-to-spec-transition";
+const TRANSITION_PROXY_VISIBLE_CLASS = "layout-banner-to-spec-proxy-visible";
 
 type LayoutRuntimeWindow = Window &
     typeof globalThis & {
         sakuraInitialized?: boolean;
+        __layoutDeferredPageInitPending?: boolean;
         __layoutRuntimeInitialized?: boolean;
         __layoutTransitionHooksAttached?: boolean;
         __layoutHashOffsetBound?: boolean;
@@ -305,6 +308,26 @@ function bindPageLifecycle(runtimeWindow: LayoutRuntimeWindow): void {
 
     document.addEventListener("astro:page-load", () => {
         updateBannerExtendCssVar();
+        if (
+            document.documentElement.classList.contains(
+                BANNER_TO_SPEC_TRANSITION_CLASS,
+            ) ||
+            document.documentElement.classList.contains(
+                TRANSITION_PROXY_VISIBLE_CLASS,
+            )
+        ) {
+            runtimeWindow.__layoutDeferredPageInitPending = true;
+            return;
+        }
+        showBanner();
+        void runDynamicPageInit();
+    });
+
+    document.addEventListener("cialli:navigation:settled", () => {
+        if (!runtimeWindow.__layoutDeferredPageInitPending) {
+            return;
+        }
+        runtimeWindow.__layoutDeferredPageInitPending = false;
         showBanner();
         void runDynamicPageInit();
     });

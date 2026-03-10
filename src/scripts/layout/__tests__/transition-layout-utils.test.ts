@@ -1,18 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+    BANNER_TO_SPEC_PROXY_ENTERING_CLASS,
+    BANNER_TO_SPEC_PROXY_MODE_ATTR,
+    BANNER_TO_SPEC_PROXY_REVEALING_CLASS,
+    BANNER_TO_SPEC_PROXY_VISIBLE_CLASS,
     BANNER_TO_SPEC_TRANSITION_DURATION_MS,
     BANNER_TO_SPEC_VT_DURATION_VAR,
+    applyTransitionProxySkeleton,
     applyBannerWaveAnimationSnapshot,
     applyVtDurationFromElapsed,
     bridgeCurrentBannerToIncomingDocument,
     captureBannerWaveAnimationSnapshot,
+    clearTransitionProxyVisualState,
     getBannerToSpecRemainingMs,
+    mountTransitionProxy,
     primeBannerWaveAnimationSnapshot,
     primeBannerLayoutStateForIncomingDocument,
     resolveBannerToSpecShiftMetricsFromViewportPositions,
     resolveMainPanelShiftFromViewportPositions,
+    resolveTransitionProxyPayloadFromDocument,
+    settleTransitionProxyEnter,
+    startTransitionProxyEnter,
+    startTransitionProxyReveal,
     shouldStartBannerToSpecTransition,
+    TRANSITION_PROXY_LAYOUT_ATTR,
     type TransitionState,
 } from "../transition-layout-utils";
 
@@ -34,9 +46,21 @@ function createStyleStore(): StyleStore {
 function createTransitionState(): TransitionState {
     return {
         pendingBannerToSpecRoutePath: "/posts",
+        pendingTransitionProxyRoutePath: "/posts",
         pendingSidebarProfilePatch: null,
         pendingBannerWaveAnimationSnapshot: null,
         bannerToSpecAnimationStartedAt: 100,
+        bannerToSpecMotionDurationMs: BANNER_TO_SPEC_TRANSITION_DURATION_MS,
+        transitionProxyMode: "post-card",
+        transitionProxyLayoutKey: "sidebar-main-right-archive",
+        bannerToSpecMotionCompleted: false,
+        bannerToSpecMotionPromise: null,
+        bannerToSpecMotionResolve: null,
+        bannerToSpecMotionTimerId: null,
+        bannerToSpecLoaderSettled: false,
+        proxyEnterFrameId: null,
+        proxyEnterTimerId: null,
+        proxyRevealTimerId: null,
         viewTransitionFinished: null,
         delayedPageViewTimerId: null,
         didReplaceContentDuringVisit: true,
@@ -56,6 +80,16 @@ function createClassList() {
         },
         remove: (...tokens: string[]) => {
             tokens.forEach((token) => values.delete(token));
+        },
+        toggle: (token: string, force?: boolean) => {
+            const shouldAdd =
+                typeof force === "boolean" ? force : !values.has(token);
+            if (shouldAdd) {
+                values.add(token);
+                return true;
+            }
+            values.delete(token);
+            return false;
         },
         contains: (token: string) => values.has(token),
     };
@@ -323,6 +357,196 @@ describe("transition layout DOM helpers", () => {
                 bannerWrapper,
             }),
         ).toBe(false);
+    });
+
+    it("applyTransitionProxySkeleton 会把完整代理壳与共享内容模板一并克隆进宿主", () => {
+        class MockHtmlElement {}
+        class MockTemplateElement {}
+        vi.stubGlobal("HTMLElement", MockHtmlElement);
+        vi.stubGlobal("HTMLTemplateElement", MockTemplateElement);
+
+        const appendedNodes: unknown[] = [];
+        const mainSlot = Object.assign(new MockHtmlElement(), {
+            appendChild: vi.fn(),
+        });
+        const shellFragment = {
+            querySelector: vi.fn((selector: string) =>
+                selector === "[data-transition-proxy-main-slot]"
+                    ? mainSlot
+                    : null,
+            ),
+        };
+        const proxyHost = Object.assign(new MockHtmlElement(), {
+            firstChild: null,
+            removeChild: vi.fn(),
+            appendChild: vi.fn((node: unknown) => {
+                appendedNodes.push(node);
+                return node;
+            }),
+        });
+        const contentFragment = { marker: "proxy-content-fragment" };
+        const shellTemplate = Object.assign(new MockTemplateElement(), {
+            content: {
+                cloneNode: vi.fn(() => shellFragment),
+            },
+        });
+        const contentTemplate = Object.assign(new MockTemplateElement(), {
+            content: {
+                cloneNode: vi.fn(() => contentFragment),
+            },
+        });
+        const documentElement = {
+            setAttribute: vi.fn(),
+            removeAttribute: vi.fn(),
+        };
+        const targetDocument = {
+            documentElement,
+            getElementById: (id: string) =>
+                id === "main-panel-transition-proxy" ? proxyHost : null,
+            querySelector: (selector: string) =>
+                selector ===
+                '[data-transition-proxy-shell="sidebar-main-right-default"]'
+                    ? shellTemplate
+                    : selector ===
+                        '[data-transition-proxy-template="post-detail"]'
+                      ? contentTemplate
+                      : null,
+        } as unknown as Document;
+
+        const didApply = applyTransitionProxySkeleton(
+            {
+                mode: "post-detail",
+                layoutKey: "sidebar-main-right-default",
+            },
+            targetDocument,
+        );
+
+        expect(didApply).toBe(true);
+        expect(shellTemplate.content.cloneNode).toHaveBeenCalledWith(true);
+        expect(contentTemplate.content.cloneNode).toHaveBeenCalledWith(true);
+        expect(mainSlot.appendChild).toHaveBeenCalledWith(contentFragment);
+        expect(appendedNodes[0]).toBe(shellFragment);
+        expect(documentElement.setAttribute).toHaveBeenCalledWith(
+            BANNER_TO_SPEC_PROXY_MODE_ATTR,
+            "post-detail",
+        );
+        expect(documentElement.setAttribute).toHaveBeenCalledWith(
+            TRANSITION_PROXY_LAYOUT_ATTR,
+            "sidebar-main-right-default",
+        );
+    });
+
+    it("代理骨架显隐 helper 会按 mount -> enter -> reveal -> clear 四阶段切换状态", () => {
+        class MockHtmlElement {}
+        vi.stubGlobal("HTMLElement", MockHtmlElement);
+
+        const classList = createClassList();
+        const proxyHost = Object.assign(new MockHtmlElement(), {
+            firstChild: null,
+            removeChild: vi.fn(),
+            removeAttribute: vi.fn(),
+            setAttribute: vi.fn(),
+        });
+        const targetDocument = {
+            documentElement: {
+                classList,
+                setAttribute: vi.fn(),
+                removeAttribute: vi.fn(),
+            },
+            getElementById: (id: string) =>
+                id === "main-panel-transition-proxy" ? proxyHost : null,
+        } as unknown as Document;
+
+        mountTransitionProxy(targetDocument);
+        expect(proxyHost.removeAttribute).toHaveBeenCalledWith("hidden");
+
+        startTransitionProxyEnter(targetDocument);
+        expect(classList.contains(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS)).toBe(
+            true,
+        );
+        expect(classList.contains(BANNER_TO_SPEC_PROXY_ENTERING_CLASS)).toBe(
+            true,
+        );
+
+        settleTransitionProxyEnter(targetDocument);
+        expect(classList.contains(BANNER_TO_SPEC_PROXY_ENTERING_CLASS)).toBe(
+            false,
+        );
+
+        startTransitionProxyReveal(targetDocument);
+        expect(classList.contains(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS)).toBe(
+            true,
+        );
+        expect(classList.contains(BANNER_TO_SPEC_PROXY_REVEALING_CLASS)).toBe(
+            true,
+        );
+
+        clearTransitionProxyVisualState(targetDocument);
+        expect(classList.contains(BANNER_TO_SPEC_PROXY_VISIBLE_CLASS)).toBe(
+            false,
+        );
+        expect(classList.contains(BANNER_TO_SPEC_PROXY_REVEALING_CLASS)).toBe(
+            false,
+        );
+        expect(proxyHost.setAttribute).toHaveBeenCalledWith("hidden", "");
+    });
+
+    it("resolveTransitionProxyPayloadFromDocument 会优先按真实 incoming DOM 修正右栏布局", () => {
+        const targetDocument = {
+            documentElement: {
+                classList: {
+                    contains: () => false,
+                },
+            },
+            body: {
+                dataset: {
+                    routePostEditor: "false",
+                },
+            },
+            querySelector: (selector: string) =>
+                selector === ".album-filter-panel" ? {} : null,
+            getElementById: (_id: string) => null,
+        } as unknown as Document;
+
+        expect(
+            resolveTransitionProxyPayloadFromDocument(
+                targetDocument,
+                "/alice/albums",
+            ),
+        ).toEqual({
+            mode: "user-albums",
+            layoutKey: "sidebar-main-right-albums",
+        });
+    });
+
+    it("resolveTransitionProxyPayloadFromDocument 会为 auth 路由保留专用代理壳", () => {
+        const targetDocument = {
+            documentElement: {
+                classList: {
+                    contains: () => false,
+                },
+            },
+            body: {
+                dataset: {
+                    routePostEditor: "false",
+                },
+            },
+            querySelector: (selector: string) =>
+                selector === '[data-enter-skeleton-page="auth-login"]'
+                    ? {}
+                    : null,
+            getElementById: (_id: string) => null,
+        } as unknown as Document;
+
+        expect(
+            resolveTransitionProxyPayloadFromDocument(
+                targetDocument,
+                "/auth/login",
+            ),
+        ).toEqual({
+            mode: "auth-login",
+            layoutKey: "sidebar-main",
+        });
     });
 });
 
