@@ -1,6 +1,7 @@
 ---
 import Comment from "@components/comment/index.astro";
 import ContentNotVisible from "@components/misc/ContentNotVisible.astro";
+import ExternalImage from "@components/misc/ExternalImage.astro";
 import Markdown from "@components/misc/Markdown.astro";
 import I18nKey from "@i18n/i18nKey";
 import { i18n } from "@i18n/translation";
@@ -264,7 +265,7 @@ const diaryMetaText = formatDiaryMetaDate(diary?.date_created);
                         data-caption={diaryGallery[0].caption || undefined}
                         class="block overflow-hidden rounded-xl border border-(--line-divider) bg-(--card-bg)"
                       >
-                        <img
+                        <ExternalImage
                           src={diaryGallery[0].preview}
                           alt={diaryGallery[0].caption || "diary image"}
                           class="w-full h-auto"
@@ -287,7 +288,7 @@ const diaryMetaText = formatDiaryMetaDate(diary?.date_created);
                             data-caption={image.caption || undefined}
                             class="block aspect-square overflow-hidden rounded-xl border border-(--line-divider) bg-(--card-bg)"
                           >
-                            <img
+                            <ExternalImage
                               src={image.thumb}
                               alt={image.caption || "diary image"}
                               class="w-full h-full object-cover"

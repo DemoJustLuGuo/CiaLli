@@ -1,5 +1,6 @@
 ---
 import type { AppArticle } from "@/types/app";
+import ExternalImage from "@components/misc/ExternalImage.astro";
 import { buildPublicAssetUrl } from "@/server/directus-auth";
 import { formatDateToYYYYMMDD } from "@/utils/date-utils";
 
@@ -36,7 +37,7 @@ const dateStr = publishedDate
   <div class="h-36 overflow-hidden relative">
     {
       hasCover ? (
-        <img
+        <ExternalImage
           src={coverUrl}
           alt={article.title}
           class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"

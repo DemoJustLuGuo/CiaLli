@@ -1,4 +1,5 @@
 ---
+import ExternalImage from "@components/misc/ExternalImage.astro";
 import Markdown from "@components/misc/Markdown.astro";
 import { renderMarkdown } from "@/server/markdown/render";
 import {
@@ -206,7 +207,7 @@ const allTags = collectAllTags(friendsList);
 												transition-all duration-300"
                       >
                         {item.imgurl ? (
-                          <img
+                          <ExternalImage
                             src={item.imgurl}
                             alt={item.title}
                             class="w-full h-full object-cover transform group-hover:scale-110 transition-transform duration-300"

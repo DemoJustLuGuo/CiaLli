@@ -2,6 +2,7 @@
 import type { AppUserRegistrationRequest } from "@/types/app";
 import type { JsonObject } from "@/types/json";
 import defaultAvatarAsset from "@/assets/images/avatar.webp";
+import ExternalImage from "@components/misc/ExternalImage.astro";
 import I18nKey from "@i18n/i18nKey";
 import { i18n } from "@i18n/translation";
 import MainGridLayout from "@layouts/MainGridLayout.astro";
@@ -152,7 +153,7 @@ const registerI18n = buildRegisterI18n();
               <div class="flex items-start justify-between gap-4 flex-wrap">
                 <div class="flex items-center gap-3">
                   {currentRegistrationAvatar ? (
-                    <img
+                    <ExternalImage
                       id="register-current-avatar"
                       class="w-12 h-12 rounded-full object-cover border border-(--line-divider) bg-black/10 dark:bg-white/10"
                       src={currentRegistrationAvatar}

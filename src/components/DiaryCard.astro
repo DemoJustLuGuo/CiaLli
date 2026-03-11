@@ -1,6 +1,7 @@
 ---
 import { Icon } from "astro-icon/components";
 
+import ExternalImage from "@components/misc/ExternalImage.astro";
 import type { AppDiary, AppDiaryImage } from "@/types/app";
 import type { AuthorBundleItem } from "@/server/api/v1/shared/author-cache";
 import { buildPublicAssetUrl } from "@/server/directus-auth";
@@ -103,7 +104,7 @@ function resolveDiaryImageSrc(image: AppDiaryImage): string {
         visibleImages.length > 0 && (
           <div class="grid grid-cols-4 gap-2">
             {visibleImages.map((img) => (
-              <img
+              <ExternalImage
                 src={resolveDiaryImageSrc(img)}
                 alt="日记配图"
                 class="w-full h-24 object-cover rounded-lg border border-(--line-divider)"

@@ -4,6 +4,7 @@ import ContentNotVisible from "@components/misc/ContentNotVisible.astro";
 import ArticleShareDialog from "@components/misc/ArticleShareDialog.astro";
 import I18nKey from "@i18n/i18nKey";
 import { i18n } from "@i18n/translation";
+import ExternalImage from "@components/misc/ExternalImage.astro";
 import Markdown from "@components/misc/Markdown.astro";
 import PasswordProtection from "@components/PasswordProtection.astro";
 import ResponsiveImage from "@components/misc/ResponsiveImage.astro";
@@ -408,7 +409,7 @@ const articleSharePayload: SharePosterPayload | undefined =
                     class="w-full max-h-[420px] object-cover rounded-xl border border-(--line-divider)"
                   />
                 ) : (
-                  <img
+                  <ExternalImage
                     src={coverUrl}
                     alt={article.title || i18n(I18nKey.contentUntitled)}
                     class="w-full max-h-[420px] object-cover rounded-xl border border-(--line-divider)"
