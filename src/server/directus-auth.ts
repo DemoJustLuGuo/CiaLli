@@ -222,7 +222,8 @@ export function buildPublicAssetUrl(
         return buildDirectusAssetUrl(fileId, options);
     }
 
-    const url = new URL(`/${encodeURIComponent(fileId)}`, baseUrl);
+    const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+    const url = new URL(encodeURIComponent(fileId), normalizedBase);
     if (options?.width) {
         url.searchParams.set("width", String(options.width));
     }
