@@ -12,6 +12,7 @@ const { readManyMock } = vi.hoisted(() => ({
 
 vi.mock("@/server/directus/client", () => ({
     readMany: readManyMock,
+    runWithDirectusServiceAccess: vi.fn((task: () => unknown) => task()),
 }));
 
 vi.mock("@/server/directus-auth", () => ({
