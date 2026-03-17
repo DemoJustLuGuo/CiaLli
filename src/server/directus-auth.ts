@@ -14,7 +14,7 @@ import type { JsonObject, JsonValue } from "@/types/json";
 import { getJsonString, isJsonObject } from "@/utils/json-utils";
 import { internal } from "@/server/api/errors";
 
-type DirectusAuthTokens = {
+export type DirectusAuthTokens = {
     accessToken: string;
     refreshToken: string;
     expiresMs?: number;
@@ -222,7 +222,8 @@ export function buildPublicAssetUrl(
         return buildDirectusAssetUrl(fileId, options);
     }
 
-    const url = new URL(`/${encodeURIComponent(fileId)}`, baseUrl);
+    const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+    const url = new URL(encodeURIComponent(fileId), normalizedBase);
     if (options?.width) {
         url.searchParams.set("width", String(options.width));
     }
@@ -499,38 +500,4 @@ export function getClientIp(headers: Headers): string {
         return realIp.trim();
     }
     return "unknown";
-}
-
-type RateLimitRecord = { count: number; resetAt: number };
-const loginRateLimit = new Map<string, RateLimitRecord>();
-
-export type LoginRateLimitResult =
-    | { ok: true; remaining: number; resetAt: number }
-    | { ok: false; remaining: 0; resetAt: number };
-
-export function checkLoginRateLimit(
-    ip: string,
-    options?: { limit?: number; windowMs?: number },
-): LoginRateLimitResult {
-    const limit = options?.limit ?? 10;
-    const windowMs = options?.windowMs ?? 5 * 60 * 1000;
-
-    const now = Date.now();
-    const existing = loginRateLimit.get(ip);
-    if (!existing || existing.resetAt <= now) {
-        loginRateLimit.set(ip, { count: 1, resetAt: now + windowMs });
-        return { ok: true, remaining: limit - 1, resetAt: now + windowMs };
-    }
-
-    if (existing.count >= limit) {
-        return { ok: false, remaining: 0, resetAt: existing.resetAt };
-    }
-
-    existing.count += 1;
-    loginRateLimit.set(ip, existing);
-    return {
-        ok: true,
-        remaining: Math.max(0, limit - existing.count),
-        resetAt: existing.resetAt,
-    };
 }

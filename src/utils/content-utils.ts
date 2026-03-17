@@ -5,7 +5,10 @@ import type {
     AppProfile,
 } from "@/types/app";
 import type { JsonObject } from "@/types/json";
-import { readMany } from "@/server/directus/client";
+import {
+    readMany,
+    runWithDirectusServiceAccess,
+} from "@/server/directus/client";
 import {
     buildDirectusAssetUrl,
     buildPublicAssetUrl,
@@ -446,43 +449,46 @@ async function loadDirectusPosts(
     viewerId?: string | null,
 ): Promise<DirectusPostEntry[]> {
     try {
-        const rows = await readMany("app_articles", {
-            filter: buildVisiblePostsFilter(viewerId),
-            sort: ["-date_updated", "-date_created"],
-            limit: 1000,
+        return await runWithDirectusServiceAccess(async () => {
+            const rows = await readMany("app_articles", {
+                filter: buildVisiblePostsFilter(viewerId),
+                sort: ["-date_updated", "-date_created"],
+                limit: 1000,
+            });
+
+            const articleIds = rows
+                .map((row) => String(row.id || "").trim())
+                .filter(Boolean);
+            const authorIds = Array.from(
+                new Set(
+                    rows
+                        .map((row) => String(row.author_id || "").trim())
+                        .filter(Boolean),
+                ),
+            );
+            const [profileMap, userMap, commentCountMap, likeCountMap] =
+                await Promise.all([
+                    fetchProfilesByUserIds(authorIds),
+                    fetchUsersByIds(authorIds),
+                    fetchArticleCommentCountMap(articleIds),
+                    fetchArticleLikeCountMap(articleIds),
+                ]);
+
+            const ctx: PostMappingContext = {
+                profileMap,
+                userMap,
+                commentCountMap,
+                likeCountMap,
+                viewerId: String(viewerId || "").trim() || null,
+            };
+
+            const mapped = rows.map((post) => mapPostToEntry(post, ctx));
+
+            return mapped.sort(
+                (a, b) =>
+                    b.data.published.getTime() - a.data.published.getTime(),
+            );
         });
-
-        const articleIds = rows
-            .map((row) => String(row.id || "").trim())
-            .filter(Boolean);
-        const authorIds = Array.from(
-            new Set(
-                rows
-                    .map((row) => String(row.author_id || "").trim())
-                    .filter(Boolean),
-            ),
-        );
-        const [profileMap, userMap, commentCountMap, likeCountMap] =
-            await Promise.all([
-                fetchProfilesByUserIds(authorIds),
-                fetchUsersByIds(authorIds),
-                fetchArticleCommentCountMap(articleIds),
-                fetchArticleLikeCountMap(articleIds),
-            ]);
-
-        const ctx: PostMappingContext = {
-            profileMap,
-            userMap,
-            commentCountMap,
-            likeCountMap,
-            viewerId: String(viewerId || "").trim() || null,
-        };
-
-        const mapped = rows.map((post) => mapPostToEntry(post, ctx));
-
-        return mapped.sort(
-            (a, b) => b.data.published.getTime() - a.data.published.getTime(),
-        );
     } catch (error) {
         console.warn(
             "[content-utils] failed to load posts from Directus:",

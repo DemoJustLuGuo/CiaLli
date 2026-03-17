@@ -8,7 +8,10 @@ import {
     resolvePolicyNames,
 } from "@/server/auth/directus-access";
 import { loadDirectusAccessRegistry } from "@/server/auth/directus-registry";
-import { readOneById } from "@/server/directus/client";
+import {
+    readOneById,
+    runWithDirectusServiceAccess,
+} from "@/server/directus/client";
 import {
     DIRECTUS_ACCESS_COOKIE_NAME,
     DIRECTUS_REFRESH_COOKIE_NAME,
@@ -247,20 +250,22 @@ async function buildSessionUser(
 
 async function loadDirectusUserById(userId: string): Promise<AppUser | null> {
     try {
-        return await readOneById("directus_users", userId, {
-            fields: [
-                "id",
-                "email",
-                "first_name",
-                "last_name",
-                "description",
-                "avatar",
-                "status",
-                "role.id",
-                "role.name",
-                "policies.*",
-            ],
-        });
+        return await runWithDirectusServiceAccess(() =>
+            readOneById("directus_users", userId, {
+                fields: [
+                    "id",
+                    "email",
+                    "first_name",
+                    "last_name",
+                    "description",
+                    "avatar",
+                    "status",
+                    "role.id",
+                    "role.name",
+                    "policies.*",
+                ],
+            }),
+        );
     } catch (error) {
         console.warn(
             "[auth/session] Failed to load directus user by id",
@@ -328,6 +333,15 @@ async function loadUserByAccessToken(
     }
 }
 
+function sweepExpiredRefreshCache(): void {
+    const now = Date.now();
+    for (const [key, entry] of refreshResultCache) {
+        if (entry.expiresAt <= now) {
+            refreshResultCache.delete(key);
+        }
+    }
+}
+
 async function refreshWithLock(refreshToken: string): Promise<RefreshedTokens> {
     const cached = refreshResultCache.get(refreshToken);
     if (cached && cached.expiresAt > Date.now()) {
@@ -350,6 +364,7 @@ async function refreshWithLock(refreshToken: string): Promise<RefreshedTokens> {
             };
             refreshResultCache.set(refreshToken, cachedValue);
             refreshResultCache.set(tokens.refreshToken, cachedValue);
+            sweepExpiredRefreshCache();
             return tokens;
         })
         .finally(() => {
@@ -363,11 +378,13 @@ async function resolveUserFromAccessToken(
     context: APIContext,
     accessToken: string,
 ): Promise<SessionUser | null | "continue"> {
+    const cached = await loadSessionUserFromCache(accessToken).catch(
+        () => null,
+    );
+    if (cached) {
+        return cached;
+    }
     try {
-        const cached = await loadSessionUserFromCache(accessToken);
-        if (cached) {
-            return cached;
-        }
         const user = await loadUserByAccessToken(accessToken);
         if (user) {
             saveSessionUserToCache(accessToken, user);
@@ -376,8 +393,12 @@ async function resolveUserFromAccessToken(
         invalidateSessionUserCache(accessToken);
         clearCookie(context, DIRECTUS_ACCESS_COOKIE_NAME);
         return "continue";
-    } catch {
-        return null;
+    } catch (error) {
+        console.warn(
+            "[auth/session] Transient error resolving user from access token, trying refresh path",
+            error,
+        );
+        return "continue";
     }
 }
 
@@ -385,11 +406,13 @@ async function resolveUserFromRefreshedTokens(
     context: APIContext,
     tokens: RefreshedTokens,
 ): Promise<SessionUser | null> {
+    const cached = await loadSessionUserFromCache(tokens.accessToken).catch(
+        () => null,
+    );
+    if (cached) {
+        return cached;
+    }
     try {
-        const cached = await loadSessionUserFromCache(tokens.accessToken);
-        if (cached) {
-            return cached;
-        }
         const user = await loadUserByAccessToken(tokens.accessToken);
         if (!user) {
             invalidateSessionUserCache(tokens.accessToken);
@@ -398,7 +421,11 @@ async function resolveUserFromRefreshedTokens(
         }
         saveSessionUserToCache(tokens.accessToken, user);
         return user;
-    } catch {
+    } catch (error) {
+        console.warn(
+            "[auth/session] Transient error in resolveUserFromRefreshedTokens",
+            error,
+        );
         return null;
     }
 }

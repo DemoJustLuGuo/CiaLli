@@ -1,10 +1,10 @@
 import type { JsonObject } from "@/types/json";
 import {
-    readMany,
-    updateDirectusFileMetadata,
-    updateManyItemsByFilter,
-    updateOne,
-} from "@/server/directus/client";
+    loadReferencedFilesByUserFromRepository,
+    updateItemsByFilter,
+    updateManagedFileMetadata,
+    updateRegistrationRequestAvatar,
+} from "@/server/repositories/files/file-metadata.repository";
 
 const USER_DELETE_NULLIFY_REFERENCES: Array<{
     collection: string;
@@ -27,7 +27,7 @@ async function nullifyUserReferenceField(
     userId: string,
 ): Promise<void> {
     try {
-        await updateManyItemsByFilter({
+        await updateItemsByFilter({
             collection,
             filter: { [field]: { _eq: userId } } as JsonObject,
             data: { [field]: null } as JsonObject,
@@ -39,17 +39,6 @@ async function nullifyUserReferenceField(
             message.includes("ITEM_NOT_FOUND") ||
             message.includes("404")
         ) {
-            return;
-        }
-        if (
-            /forbidden|permission|readonly|read-only|invalid payload|field/i.test(
-                message,
-            )
-        ) {
-            console.warn(
-                `[admin/users] skip nullify reference ${collection}.${field}:`,
-                message,
-            );
             return;
         }
         throw error;
@@ -90,14 +79,14 @@ export async function nullifyReferencedFileOwnership(
             continue;
         }
         try {
-            await updateDirectusFileMetadata(file.id, payload);
+            await updateManagedFileMetadata(file.id, payload as JsonObject);
         } catch (error) {
             const message = String(error);
             if (payload.uploaded_by === null && payload.modified_by === null) {
                 try {
-                    await updateDirectusFileMetadata(file.id, {
+                    await updateManagedFileMetadata(file.id, {
                         uploaded_by: null,
-                    });
+                    } as JsonObject);
                     continue;
                 } catch (fallbackError) {
                     console.warn(
@@ -118,16 +107,7 @@ export async function nullifyReferencedFileOwnership(
 export async function loadReferencedFilesByUser(
     userId: string,
 ): Promise<ReferencedFile[]> {
-    return readMany("directus_files", {
-        filter: {
-            _or: [
-                { uploaded_by: { _eq: userId } },
-                { modified_by: { _eq: userId } },
-            ],
-        } as JsonObject,
-        limit: 5000,
-        fields: ["id", "uploaded_by", "modified_by"],
-    }).catch((error) => {
+    return loadReferencedFilesByUserFromRepository(userId).catch((error) => {
         const message = String(error);
         if (/forbidden|permission/i.test(message)) {
             console.warn(
@@ -144,11 +124,13 @@ export async function nullifyRegistrationRequestAvatars(
     registrationRequests: Array<{ id: string; avatar_file?: unknown }>,
 ): Promise<void> {
     for (const request of registrationRequests) {
-        if (!request.avatar_file) {
-            continue;
-        }
-        await updateOne("app_user_registration_requests", request.id, {
-            avatar_file: null,
+        if (!request.avatar_file) continue;
+        await updateRegistrationRequestAvatar(request.id).catch((error) => {
+            console.warn(
+                "[admin/users] 清空注册请求头像引用失败, requestId:",
+                request.id,
+                error,
+            );
         });
     }
 }

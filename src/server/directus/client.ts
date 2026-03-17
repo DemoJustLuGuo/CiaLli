@@ -50,7 +50,7 @@ type DirectusAssetQuery = Partial<
 
 type DirectusAggregateRow = Record<string, unknown>;
 
-type DirectusRequestScope =
+export type DirectusRequestScope =
     | { kind: "service" }
     | { kind: "public" }
     | { kind: "user"; accessToken: string };
@@ -73,6 +73,14 @@ type DirectusUserPolicyAssignment = {
     id: string;
     policy: string;
 };
+
+type BatchCollectionPath =
+    | "/comments"
+    | "/files"
+    | "/notifications"
+    | "/users"
+    | "/versions"
+    | `/items/${string}`;
 
 const SAFE_DIARY_FIELDS = [
     "id",
@@ -146,7 +154,14 @@ function getServiceClient() {
 }
 
 function getCurrentScope(): DirectusRequestScope {
-    return directusScopeStorage.getStore() ?? { kind: "service" };
+    const currentScope = directusScopeStorage.getStore();
+    if (currentScope) {
+        return currentScope;
+    }
+
+    throw internal(
+        "Directus 访问缺少 request scope — 请使用 runWithDirectusServiceAccess / runWithDirectusPublicAccess / runWithDirectusUserAccess 包裹调用点",
+    );
 }
 
 function getDirectusTargetHost(): string | undefined {
@@ -235,6 +250,25 @@ function parseItemArrayResponse<T>(input: unknown): T[] {
         return ((input as { data: unknown[] }).data ?? []) as T[];
     }
     return [];
+}
+
+function resolveBatchCollectionPath(collection: string): BatchCollectionPath {
+    if (collection === "directus_comments") {
+        return "/comments";
+    }
+    if (collection === "directus_files") {
+        return "/files";
+    }
+    if (collection === "directus_notifications") {
+        return "/notifications";
+    }
+    if (collection === "directus_users") {
+        return "/users";
+    }
+    if (collection === "directus_versions") {
+        return "/versions";
+    }
+    return `/items/${encodeURIComponent(collection)}`;
 }
 
 export async function readMany<K extends keyof DirectusSchema>(
@@ -667,10 +701,11 @@ export async function updateManyItemsByFilter(params: {
     filter: JsonObject;
     data: JsonObject;
 }): Promise<void> {
+    const path = resolveBatchCollectionPath(params.collection);
     const rows = await executeDirectusRequest(
         `读取集合 ${params.collection} 批量更新候选`,
         customEndpoint({
-            path: `/items/${encodeURIComponent(params.collection)}`,
+            path,
             method: "GET",
             params: {
                 filter: params.filter,
@@ -690,12 +725,12 @@ export async function updateManyItemsByFilter(params: {
     await executeDirectusRequest(
         `批量更新集合 ${params.collection} 数据`,
         customEndpoint({
-            path: `/items/${encodeURIComponent(params.collection)}`,
+            path,
             method: "PATCH",
-            body: {
+            body: JSON.stringify({
                 keys,
                 data: params.data,
-            } as never,
+            }) as never,
         }),
     );
 }
@@ -737,4 +772,4 @@ export async function readDirectusAssetResponse(params: {
     throw internal("资源响应格式无效");
 }
 
-export type { DirectusPolicyRecord, DirectusRoleRecord, DirectusRequestScope };
+export type { DirectusPolicyRecord, DirectusRoleRecord };
