@@ -4,7 +4,7 @@ import { i18n } from "@i18n/translation";
 import MainGridLayout from "@layouts/MainGridLayout.astro";
 import { getSessionUser } from "@/server/auth/session";
 import {
-  loadPublicProfileByUserId,
+  loadProfileForViewerByUserId,
   profileToSidebarData,
 } from "@/server/api/v1/public-data";
 
@@ -13,7 +13,7 @@ export const prerender = false;
 try {
   const user = await getSessionUser(Astro);
   if (user) {
-    const profile = await loadPublicProfileByUserId(user.id);
+    const profile = await loadProfileForViewerByUserId(user.id, user.id);
     if (profile) {
       Astro.locals.sidebarProfile = profileToSidebarData(profile);
     }
@@ -125,7 +125,7 @@ try {
                 id="homepage-header-save-btn"
                 class="px-4 py-2 rounded-lg bg-(--btn-regular-bg) text-(--btn-content) text-sm"
               >
-                {i18n(I18nKey.commonSave)}
+                {i18n(I18nKey.interactionCommonSave)}
               </button>
               <span id="homepage-header-msg" class="text-sm text-60"></span>
             </div>
@@ -152,7 +152,7 @@ try {
                 id="homepage-section-save-btn"
                 class="px-4 py-2 rounded-lg bg-(--btn-regular-bg) text-(--btn-content) text-sm"
               >
-                {i18n(I18nKey.commonSave)}
+                {i18n(I18nKey.interactionCommonSave)}
               </button>
               <span id="homepage-section-msg" class="text-sm text-60"></span>
             </div>
@@ -236,7 +236,7 @@ try {
                   id="homepage-bangumi-save-btn"
                   class="px-4 py-2 rounded-lg bg-(--btn-regular-bg) text-(--btn-content) text-sm"
                 >
-                  {i18n(I18nKey.commonSave)}
+                  {i18n(I18nKey.interactionCommonSave)}
                 </button>
                 <span id="homepage-bangumi-msg" class="text-sm text-60"></span>
               </div>
@@ -287,55 +287,60 @@ try {
   <div
     slot="modal"
     id="homepage-header-crop-modal"
-    class="fixed inset-0 z-9999 hidden items-center justify-center bg-black/70 px-4 py-5"
+    class="overlay-dialog hidden px-4 py-5"
     tabindex="-1"
   >
     <div
-      class="card-base w-full max-w-2xl rounded-(--radius-large) border border-(--line-divider) p-5 p-6 space-y-4 text-75"
+      class="overlay-dialog-card overlay-dialog-card-crop w-full max-w-2xl border border-(--line-divider) text-75"
+      style="text-align: left;"
     >
-      <div class="flex items-center gap-2">
-        <h3 class="text-lg text-xl font-semibold text-90">
-          {i18n(I18nKey.meHomepageCropTitle)}
-        </h3>
-      </div>
-      <p class="text-sm text-60">
-        {i18n(I18nKey.meHomepageCropHint)}
-      </p>
-      <div
-        id="homepage-header-crop-viewport"
-        class="relative mx-auto w-full aspect-[3/1] overflow-hidden rounded-2xl border border-(--line-divider) bg-black/15 dark:bg-white/10 select-none touch-none"
-      >
-        <img
-          id="homepage-header-crop-image"
-          class="absolute left-0 top-0 max-w-none pointer-events-none hidden"
-          alt={i18n(I18nKey.meHomepageCropAlt)}
-        />
-        <div
-          id="homepage-header-crop-empty"
-          class="absolute inset-0 grid place-items-center text-sm text-60 pointer-events-none"
-        >
-          {i18n(I18nKey.commonSelectImage)}
+      <div class="overlay-dialog-body">
+        <div class="flex items-center gap-2">
+          <h3 class="text-lg text-xl font-semibold text-90">
+            {i18n(I18nKey.meHomepageCropTitle)}
+          </h3>
         </div>
+        <p class="text-sm text-60">
+          {i18n(I18nKey.meHomepageCropHint)}
+        </p>
         <div
-          class="absolute inset-0 pointer-events-none rounded-2xl ring-2 ring-white/80"
+          id="homepage-header-crop-viewport"
+          class="relative mx-auto w-full aspect-[3/1] overflow-hidden rounded-2xl border border-(--line-divider) bg-black/15 dark:bg-white/10 select-none touch-none"
         >
+          <img
+            id="homepage-header-crop-image"
+            class="absolute left-0 top-0 max-w-none pointer-events-none hidden"
+            alt={i18n(I18nKey.meHomepageCropAlt)}
+          />
+          <div
+            id="homepage-header-crop-empty"
+            class="absolute inset-0 grid place-items-center text-sm text-60 pointer-events-none"
+          >
+            {i18n(I18nKey.interactionCommonSelectImage)}
+          </div>
+          <div
+            class="absolute inset-0 pointer-events-none rounded-2xl ring-2 ring-white/80"
+          >
+          </div>
         </div>
+        <div class="space-y-1">
+          <label for="homepage-header-crop-zoom" class="text-sm text-60"
+            >{i18n(I18nKey.interactionCommonZoom)}</label
+          >
+          <input
+            id="homepage-header-crop-zoom"
+            type="range"
+            min="100"
+            max="300"
+            step="1"
+            value="100"
+            class="w-full"
+          />
+        </div>
+        <span id="homepage-header-crop-msg" class="text-sm text-red-500"></span>
       </div>
-      <div class="space-y-1">
-        <label for="homepage-header-crop-zoom" class="text-sm text-60"
-          >{i18n(I18nKey.commonZoom)}</label
-        >
-        <input
-          id="homepage-header-crop-zoom"
-          type="range"
-          min="100"
-          max="300"
-          step="1"
-          value="100"
-          class="w-full"
-        />
-      </div>
-      <div class="flex flex-wrap items-center gap-3">
+
+      <div class="overlay-dialog-actions overlay-dialog-actions-crop">
         <input
           id="homepage-header-crop-file"
           type="file"
@@ -363,24 +368,23 @@ try {
               x2="12"
               y2="15"></line></svg
           >
-          {i18n(I18nKey.commonChooseFile)}
+          {i18n(I18nKey.interactionCommonChooseFile)}
         </button>
         <button
           type="button"
           id="homepage-header-crop-apply-btn"
           class="px-4 py-2.5 rounded-lg bg-(--btn-regular-bg) text-(--btn-content) text-sm"
         >
-          {i18n(I18nKey.commonApplyCrop)}
+          {i18n(I18nKey.interactionCommonApplyCrop)}
         </button>
         <button
           type="button"
           id="homepage-header-crop-cancel-btn"
-          class="ml-auto px-4 py-2.5 rounded-lg border border-(--line-divider) text-sm text-75"
+          class="overlay-dialog-actions-end px-4 py-2.5 rounded-lg border border-(--line-divider) text-sm text-75"
         >
-          {i18n(I18nKey.commonCancel)}
+          {i18n(I18nKey.interactionCommonCancel)}
         </button>
       </div>
-      <span id="homepage-header-crop-msg" class="text-sm text-red-500"></span>
     </div>
   </div>
 </MainGridLayout>

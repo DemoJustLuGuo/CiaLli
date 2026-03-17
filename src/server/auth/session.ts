@@ -3,6 +3,11 @@ import type { APIContext } from "astro";
 
 import type { AppUser } from "@/types/app";
 import { cacheManager } from "@/server/cache/manager";
+import {
+    extractDirectusPolicyIds,
+    resolvePolicyNames,
+} from "@/server/auth/directus-access";
+import { loadDirectusAccessRegistry } from "@/server/auth/directus-registry";
 import { readOneById } from "@/server/directus/client";
 import {
     DIRECTUS_ACCESS_COOKIE_NAME,
@@ -22,8 +27,12 @@ export type SessionUser = {
     email: string;
     name: string;
     avatarUrl?: string;
+    avatarFileId?: string;
+    description?: string | null;
     roleId?: string;
     roleName?: string;
+    policyIds: string[];
+    policyNames: string[];
     isSystemAdmin: boolean;
 };
 
@@ -42,7 +51,6 @@ const refreshResultCache = new Map<
 >();
 const REFRESH_RESULT_CACHE_TTL_MS = 5000;
 const SESSION_USER_CACHE_TTL_VERSION = "v1";
-
 function hashAccessToken(accessToken: string): string {
     return createHash("sha256").update(accessToken).digest("hex");
 }
@@ -121,6 +129,11 @@ function extractRole(
     return { roleId, roleName };
 }
 
+async function loadPolicyNameMap(): Promise<Map<string, string>> {
+    const registry = await loadDirectusAccessRegistry();
+    return new Map(registry.policyNameById);
+}
+
 function decodeBase64Url(value: string): string | null {
     const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized.padEnd(
@@ -164,33 +177,50 @@ function readAdminAccessFromToken(accessToken: string): boolean {
     }
 }
 
-function buildSessionUser(
+function resolveAvatarUrl(
+    me: DirectusMe,
+    fallbackUser?: AppUser | null,
+): string | undefined {
+    if (me.avatarId) {
+        return buildDirectusAssetUrl(me.avatarId, {
+            width: 128,
+            height: 128,
+            fit: "cover",
+        });
+    }
+    const fallbackAvatar =
+        fallbackUser?.avatar && String(fallbackUser.avatar).trim()
+            ? String(fallbackUser.avatar).trim()
+            : undefined;
+    if (!fallbackAvatar) {
+        return undefined;
+    }
+    return buildDirectusAssetUrl(fallbackAvatar, {
+        width: 128,
+        height: 128,
+        fit: "cover",
+    });
+}
+
+// eslint-disable-next-line complexity -- 会话用户需要一次性合并 token、Directus 用户与策略快照
+async function buildSessionUser(
     me: DirectusMe,
     accessToken: string,
     fallbackUser?: AppUser | null,
-): SessionUser | null {
+): Promise<SessionUser | null> {
     const id = String(me.id || fallbackUser?.id || "").trim();
     if (!id) {
         return null;
     }
     const email = String(me.email || fallbackUser?.email || "").trim();
-    const avatarFromMe = me.avatarId
-        ? buildDirectusAssetUrl(me.avatarId, {
-              width: 128,
-              height: 128,
-              fit: "cover",
-          })
-        : undefined;
-    const avatarFromFallback =
-        fallbackUser?.avatar && String(fallbackUser.avatar).trim()
-            ? buildDirectusAssetUrl(String(fallbackUser.avatar).trim(), {
-                  width: 128,
-                  height: 128,
-                  fit: "cover",
-              })
-            : undefined;
+    const avatarUrl = resolveAvatarUrl(me, fallbackUser);
     const { roleId, roleName } = extractRole(me.role, fallbackUser?.role);
     const isSystemAdmin = readAdminAccessFromToken(accessToken);
+    const policyIds = extractDirectusPolicyIds(fallbackUser?.policies);
+    const policyMap = await loadPolicyNameMap().catch(
+        () => new Map<string, string>(),
+    );
+    const policyNames = resolvePolicyNames(policyIds, policyMap);
 
     return {
         id,
@@ -201,9 +231,16 @@ function buildSessionUser(
             firstName: me.first_name ?? fallbackUser?.first_name,
             lastName: me.last_name ?? fallbackUser?.last_name,
         }),
-        avatarUrl: avatarFromMe || avatarFromFallback,
+        avatarUrl,
+        avatarFileId: fallbackUser?.avatar || me.avatarId || undefined,
+        description:
+            typeof fallbackUser?.description === "string"
+                ? fallbackUser.description
+                : null,
         roleId,
         roleName,
+        policyIds,
+        policyNames,
         isSystemAdmin,
     };
 }
@@ -216,8 +253,12 @@ async function loadDirectusUserById(userId: string): Promise<AppUser | null> {
                 "email",
                 "first_name",
                 "last_name",
+                "description",
                 "avatar",
-                "role",
+                "status",
+                "role.id",
+                "role.name",
+                "policies.*",
             ],
         });
     } catch (error) {
@@ -275,7 +316,7 @@ async function loadUserByAccessToken(
     try {
         const me = await directusGetMe({ accessToken });
         const fallbackUser = me.id ? await loadDirectusUserById(me.id) : null;
-        return buildSessionUser(me, accessToken, fallbackUser);
+        return await buildSessionUser(me, accessToken, fallbackUser);
     } catch (error) {
         const isAuthError =
             error instanceof DirectusAuthError &&
@@ -318,26 +359,59 @@ async function refreshWithLock(refreshToken: string): Promise<RefreshedTokens> {
     return await task;
 }
 
+async function resolveUserFromAccessToken(
+    context: APIContext,
+    accessToken: string,
+): Promise<SessionUser | null | "continue"> {
+    try {
+        const cached = await loadSessionUserFromCache(accessToken);
+        if (cached) {
+            return cached;
+        }
+        const user = await loadUserByAccessToken(accessToken);
+        if (user) {
+            saveSessionUserToCache(accessToken, user);
+            return user;
+        }
+        invalidateSessionUserCache(accessToken);
+        clearCookie(context, DIRECTUS_ACCESS_COOKIE_NAME);
+        return "continue";
+    } catch {
+        return null;
+    }
+}
+
+async function resolveUserFromRefreshedTokens(
+    context: APIContext,
+    tokens: RefreshedTokens,
+): Promise<SessionUser | null> {
+    try {
+        const cached = await loadSessionUserFromCache(tokens.accessToken);
+        if (cached) {
+            return cached;
+        }
+        const user = await loadUserByAccessToken(tokens.accessToken);
+        if (!user) {
+            invalidateSessionUserCache(tokens.accessToken);
+            clearSession(context);
+            return null;
+        }
+        saveSessionUserToCache(tokens.accessToken, user);
+        return user;
+    } catch {
+        return null;
+    }
+}
+
 export async function getSessionUser(
     context: APIContext,
 ): Promise<SessionUser | null> {
     const accessToken =
         context.cookies.get(DIRECTUS_ACCESS_COOKIE_NAME)?.value || "";
     if (accessToken) {
-        try {
-            const cached = await loadSessionUserFromCache(accessToken);
-            if (cached) {
-                return cached;
-            }
-            const user = await loadUserByAccessToken(accessToken);
-            if (user) {
-                saveSessionUserToCache(accessToken, user);
-                return user;
-            }
-            invalidateSessionUserCache(accessToken);
-            clearCookie(context, DIRECTUS_ACCESS_COOKIE_NAME);
-        } catch {
-            return null;
+        const result = await resolveUserFromAccessToken(context, accessToken);
+        if (result !== "continue") {
+            return result;
         }
     }
 
@@ -353,22 +427,7 @@ export async function getSessionUser(
             context.cookies.get(REMEMBER_COOKIE_NAME)?.value ?? undefined;
         const sessionOnly = isSessionOnlyMode(rememberValue);
         setSessionCookies(context, tokens, sessionOnly);
-        try {
-            const cached = await loadSessionUserFromCache(tokens.accessToken);
-            if (cached) {
-                return cached;
-            }
-            const user = await loadUserByAccessToken(tokens.accessToken);
-            if (!user) {
-                invalidateSessionUserCache(tokens.accessToken);
-                clearSession(context);
-                return null;
-            }
-            saveSessionUserToCache(tokens.accessToken, user);
-            return user;
-        } catch {
-            return null;
-        }
+        return await resolveUserFromRefreshedTokens(context, tokens);
     } catch (error) {
         const isDefinitiveAuthError =
             error instanceof DirectusAuthError &&
@@ -378,6 +437,12 @@ export async function getSessionUser(
         }
         return null;
     }
+}
+
+export function getSessionAccessToken(context: APIContext): string {
+    return (
+        context.cookies.get(DIRECTUS_ACCESS_COOKIE_NAME)?.value?.trim() || ""
+    );
 }
 
 export function clearSession(context: APIContext): void {

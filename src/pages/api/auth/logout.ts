@@ -11,12 +11,14 @@ import {
 import { assertCsrfToken } from "@/server/security/csrf";
 
 export const prerender = false;
+const AUTH_NO_STORE = "private, no-store";
 
 function json<T>(data: T, init?: ResponseInit): Response {
     return new Response(JSON.stringify(data), {
         ...init,
         headers: {
             "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": AUTH_NO_STORE,
             ...(init?.headers ?? {}),
         },
     });
@@ -56,7 +58,7 @@ export async function POST(context: APIContext): Promise<Response> {
     const origin = request.headers.get("origin");
     if (origin && origin !== url.origin) {
         return json(
-            { ok: false, message: i18n(I18nKey.apiIllegalOrigin) },
+            { ok: false, message: i18n(I18nKey.interactionApiIllegalOrigin) },
             { status: 403 },
         );
     }

@@ -5,6 +5,7 @@
 import I18nKey from "@i18n/i18nKey";
 import { UPLOAD_LIMITS, UPLOAD_LIMIT_LABELS } from "@constants/upload-limits";
 import { t, tFmt } from "@/scripts/i18n-runtime";
+import { clamp } from "@/scripts/dom-helpers";
 
 export interface CropModalConfig {
     outputWidth: number;
@@ -15,11 +16,6 @@ export interface CropModalConfig {
     maxFileSize?: number; // 字节；不传则使用 UPLOAD_LIMITS["article-cover"]
     title?: string;
 }
-
-// ── 工具函数 ──
-
-const clamp = (value: number, min: number, max: number): number =>
-    Math.min(max, Math.max(min, value));
 
 // ── ImageCropModal ──
 
@@ -73,7 +69,7 @@ export class ImageCropModal {
             outputMime: config.outputMime ?? "image/jpeg",
             outputQuality: config.outputQuality ?? 0.9,
             maxFileSize: config.maxFileSize ?? UPLOAD_LIMITS["article-cover"],
-            title: config.title ?? t(I18nKey.commonCropImage),
+            title: config.title ?? t(I18nKey.interactionCommonCropImage),
             zoomMin,
             zoomMax,
         };
@@ -104,20 +100,23 @@ export class ImageCropModal {
         if (this.overlay) return;
 
         const overlay = document.createElement("div");
-        overlay.className =
-            "fixed inset-0 z-9999 bg-black/45 flex items-center justify-center px-4";
+        overlay.className = "overlay-dialog px-4";
         overlay.style.display = "none";
         overlay.tabIndex = -1;
 
         const card = document.createElement("div");
         card.className =
-            "card-base w-full max-w-2xl p-6 rounded-(--radius-large) border border-(--line-divider) space-y-4";
+            "overlay-dialog-card overlay-dialog-card-crop w-full max-w-2xl border border-(--line-divider) text-75";
+        card.style.textAlign = "left";
+
+        const body = document.createElement("div");
+        body.className = "overlay-dialog-body";
 
         // 标题
         const title = document.createElement("h3");
         title.className = "text-xl font-semibold text-90";
         title.textContent = this.config.title;
-        card.appendChild(title);
+        body.appendChild(title);
 
         // 视口
         const viewport = document.createElement("div");
@@ -130,17 +129,17 @@ export class ImageCropModal {
         const img = document.createElement("img");
         img.className =
             "absolute top-0 left-0 hidden pointer-events-none max-w-none";
-        img.alt = t(I18nKey.commonCropPreviewAlt);
+        img.alt = t(I18nKey.interactionCommonCropPreviewAlt);
         img.draggable = false;
 
         const emptyHint = document.createElement("p");
         emptyHint.className =
             "absolute inset-0 flex items-center justify-center text-sm text-50";
-        emptyHint.textContent = t(I18nKey.commonSelectImage);
+        emptyHint.textContent = t(I18nKey.interactionCommonSelectImage);
 
         viewport.appendChild(img);
         viewport.appendChild(emptyHint);
-        card.appendChild(viewport);
+        body.appendChild(viewport);
 
         // 控件行
         const controls = document.createElement("div");
@@ -155,11 +154,11 @@ export class ImageCropModal {
         selectBtn.type = "button";
         selectBtn.className =
             "px-4 h-9 rounded-lg text-sm font-medium transition cursor-pointer bg-(--btn-regular-bg) hover:bg-(--btn-regular-bg-hover) text-(--btn-content)";
-        selectBtn.textContent = t(I18nKey.commonChooseFile);
+        selectBtn.textContent = t(I18nKey.interactionCommonChooseFile);
 
         const zoomLabel = document.createElement("span");
         zoomLabel.className = "text-sm text-50 ml-auto";
-        zoomLabel.textContent = t(I18nKey.commonZoom);
+        zoomLabel.textContent = t(I18nKey.interactionCommonZoom);
 
         const zoomInput = document.createElement("input");
         zoomInput.type = "range";
@@ -172,32 +171,33 @@ export class ImageCropModal {
         controls.appendChild(selectBtn);
         controls.appendChild(zoomLabel);
         controls.appendChild(zoomInput);
-        card.appendChild(controls);
+        body.appendChild(controls);
 
         // 消息
         const msgEl = document.createElement("p");
         msgEl.className = "text-sm text-(--error-color) min-h-5";
-        card.appendChild(msgEl);
+        body.appendChild(msgEl);
 
         // 底部按钮
         const footer = document.createElement("div");
-        footer.className = "flex justify-end gap-3";
+        footer.className = "overlay-dialog-actions overlay-dialog-actions-crop";
 
         const cancelBtn = document.createElement("button");
         cancelBtn.type = "button";
         cancelBtn.className =
-            "px-4 h-9 rounded-lg text-sm font-medium transition cursor-pointer bg-(--btn-regular-bg) hover:bg-(--btn-regular-bg-hover) text-(--btn-content)";
-        cancelBtn.textContent = t(I18nKey.commonCancel);
+            "overlay-dialog-actions-end px-4 h-9 rounded-lg text-sm font-medium transition cursor-pointer bg-(--btn-regular-bg) hover:bg-(--btn-regular-bg-hover) text-(--btn-content)";
+        cancelBtn.textContent = t(I18nKey.interactionCommonCancel);
 
         const applyBtn = document.createElement("button");
         applyBtn.type = "button";
         applyBtn.className =
             "px-4 h-9 rounded-lg text-sm font-medium transition cursor-pointer bg-(--primary) text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed";
         applyBtn.disabled = true;
-        applyBtn.textContent = t(I18nKey.commonApplyCrop);
+        applyBtn.textContent = t(I18nKey.interactionCommonApplyCrop);
 
         footer.appendChild(cancelBtn);
         footer.appendChild(applyBtn);
+        card.appendChild(body);
         card.appendChild(footer);
 
         overlay.appendChild(card);
@@ -292,14 +292,16 @@ export class ImageCropModal {
     private loadFile(file: File): void {
         if (!this.img) return;
         if (!file.type.startsWith("image/")) {
-            this.setMsg(t(I18nKey.commonSelectImage));
+            this.setMsg(t(I18nKey.interactionCommonSelectImage));
             return;
         }
         if (file.size > this.config.maxFileSize) {
             const label =
                 UPLOAD_LIMIT_LABELS["article-cover"] ??
                 `${Math.round(this.config.maxFileSize / 1024 / 1024)} MB`;
-            this.setMsg(tFmt(I18nKey.commonImageTooLarge, { size: label }));
+            this.setMsg(
+                tFmt(I18nKey.interactionCommonImageTooLarge, { size: label }),
+            );
             return;
         }
         this.setMsg("");
@@ -324,7 +326,7 @@ export class ImageCropModal {
             this.updateApplyState();
         };
         img.onerror = () => {
-            this.setMsg(t(I18nKey.commonImageReadFailed));
+            this.setMsg(t(I18nKey.interactionCommonImageReadFailed));
             this.resetState();
         };
         this.revokeObjectUrl();
@@ -433,7 +435,7 @@ export class ImageCropModal {
 
     private async applyCrop(): Promise<void> {
         if (!this.loaded) {
-            this.setMsg(t(I18nKey.commonSelectImageFirst));
+            this.setMsg(t(I18nKey.interactionCommonSelectImageFirst));
             return;
         }
         this.processing = true;
@@ -441,7 +443,7 @@ export class ImageCropModal {
         try {
             const blob = await this.buildBlob();
             if (!blob) {
-                this.setMsg(t(I18nKey.commonCropFailed));
+                this.setMsg(t(I18nKey.interactionCommonCropFailed));
                 return;
             }
             this.close(blob);
@@ -499,8 +501,8 @@ export class ImageCropModal {
         if (!this.applyBtn) return;
         this.applyBtn.disabled = !this.loaded || this.processing;
         this.applyBtn.textContent = this.processing
-            ? t(I18nKey.commonProcessing)
-            : t(I18nKey.commonApplyCrop);
+            ? t(I18nKey.interactionCommonProcessing)
+            : t(I18nKey.interactionCommonApplyCrop);
     }
 
     private setMsg(msg: string): void {

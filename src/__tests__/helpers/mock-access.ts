@@ -7,7 +7,7 @@
 import type { AppAccessContext } from "@/server/auth/acl";
 
 import {
-    mockProfile,
+    mockProfileView,
     mockPermissions,
     mockSessionUser,
     mockAdminSessionUser,
@@ -18,9 +18,11 @@ export function createMemberAccess(
 ): AppAccessContext {
     return {
         user: mockSessionUser(),
-        profile: mockProfile(),
+        profile: mockProfileView(),
         permissions: mockPermissions(),
         isAdmin: false,
+        isSiteAdmin: false,
+        isPlatformAdmin: false,
         ...overrides,
     };
 }
@@ -30,18 +32,18 @@ export function createAdminAccess(
 ): AppAccessContext {
     return {
         user: mockAdminSessionUser(),
-        profile: mockProfile({
+        profile: mockProfileView({
             id: "admin-profile-1",
             user_id: "admin-1",
             username: "admin",
             display_name: "Admin",
         }),
         permissions: mockPermissions({
-            id: "admin-perm-1",
-            user_id: "admin-1",
             app_role: "admin",
         }),
         isAdmin: true,
+        isSiteAdmin: true,
+        isPlatformAdmin: false,
         ...overrides,
     };
 }

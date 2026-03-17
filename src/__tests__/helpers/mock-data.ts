@@ -4,7 +4,12 @@
  * 提供领域对象的 mock 构造函数，接受 Partial<T> 覆盖参数。
  */
 
-import type { AppArticle, AppPermissions, AppProfile } from "@/types/app";
+import type {
+    AppArticle,
+    AppPermissions,
+    AppProfile,
+    AppProfileView,
+} from "@/types/app";
 
 import type { SessionUser } from "@/server/auth/session";
 
@@ -14,11 +19,8 @@ export function mockProfile(overrides: Partial<AppProfile> = {}): AppProfile {
         user_id: "user-1",
         username: "testuser",
         display_name: "Test User",
-        bio: null,
         bio_typewriter_enable: false,
         bio_typewriter_speed: 50,
-        avatar_file: null,
-        avatar_url: null,
         header_file: null,
         profile_public: true,
         show_articles_on_profile: true,
@@ -37,18 +39,26 @@ export function mockProfile(overrides: Partial<AppProfile> = {}): AppProfile {
     };
 }
 
+export function mockProfileView(
+    overrides: Partial<AppProfileView> = {},
+): AppProfileView {
+    return {
+        ...mockProfile(),
+        bio: null,
+        avatar_file: null,
+        ...overrides,
+    };
+}
+
 export function mockPermissions(
     overrides: Partial<AppPermissions> = {},
 ): AppPermissions {
     return {
-        id: "perm-1",
-        user_id: "user-1",
         app_role: "member",
         can_publish_articles: true,
         can_comment_articles: true,
         can_manage_diaries: true,
         can_comment_diaries: true,
-        can_manage_anime: true,
         can_manage_albums: true,
         can_upload_files: true,
         ...overrides,
@@ -62,6 +72,10 @@ export function mockSessionUser(
         id: "user-1",
         email: "test@example.com",
         name: "Test User",
+        avatarFileId: undefined,
+        description: null,
+        policyIds: [],
+        policyNames: [],
         isSystemAdmin: false,
         ...overrides,
     };
@@ -95,9 +109,8 @@ export function mockArticle(overrides: Partial<AppArticle> = {}): AppArticle {
         category: null,
         allow_comments: true,
         is_public: true,
-        published_at: "2026-01-01T00:00:00.000Z",
         date_created: "2026-01-01T00:00:00.000Z",
-        date_updated: null,
+        date_updated: "2026-01-01T00:00:00.000Z",
         ...overrides,
     };
 }

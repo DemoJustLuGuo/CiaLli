@@ -1,3 +1,6 @@
+/* eslint-disable max-lines -- Directus 客户端集中维护 service/public/user 三类访问模型 */
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import {
     aggregate,
     createDirectus,
@@ -6,7 +9,6 @@ import {
     customEndpoint,
     deleteFile,
     deleteItem,
-    isDirectusError,
     readItem,
     readItems,
     readFiles,
@@ -18,12 +20,18 @@ import {
     updateFile,
     updateUser,
     uploadFiles,
+    withToken,
 } from "@directus/sdk";
 
 import type { AppUser } from "@/types/app";
 import type { JsonObject } from "@/types/json";
-import { AppError, internal } from "@/server/api/errors";
+import { internal } from "@/server/api/errors";
 import { getDirectusUrl } from "@/server/directus-auth";
+import {
+    isDirectusItemNotFound,
+    toDirectusError,
+} from "@/server/directus/client-errors";
+
 import type { DirectusSchema } from "./schema";
 
 type DirectusQuery = {
@@ -40,6 +48,32 @@ type DirectusAssetQuery = Partial<
     Record<"width" | "height" | "fit" | "quality" | "format", string>
 >;
 
+type DirectusAggregateRow = Record<string, unknown>;
+
+type DirectusRequestScope =
+    | { kind: "service" }
+    | { kind: "public" }
+    | { kind: "user"; accessToken: string };
+
+type DirectusPolicyRecord = {
+    id: string;
+    name: string;
+    description?: string | null;
+    admin_access?: boolean;
+    app_access?: boolean;
+};
+
+type DirectusRoleRecord = {
+    id: string;
+    name: string;
+    description?: string | null;
+};
+
+type DirectusUserPolicyAssignment = {
+    id: string;
+    policy: string;
+};
+
 const SAFE_DIARY_FIELDS = [
     "id",
     "short_id",
@@ -52,6 +86,10 @@ const SAFE_DIARY_FIELDS = [
     "date_updated",
 ] as const;
 
+const DATA_FETCH_TIMEOUT_MS = 30_000;
+
+const directusScopeStorage = new AsyncLocalStorage<DirectusRequestScope>();
+
 function getStaticToken(): string {
     const token =
         process.env.DIRECTUS_STATIC_TOKEN ||
@@ -62,11 +100,18 @@ function getStaticToken(): string {
     return token.trim();
 }
 
-// 数据请求超时（毫秒）— 需兼容文件上传等较重操作，设为 30 秒
-const DATA_FETCH_TIMEOUT_MS = 30_000;
+function buildRestClient() {
+    return createDirectus<DirectusSchema>(getDirectusUrl()).with(
+        rest({
+            onRequest: (options) => ({
+                ...options,
+                signal: AbortSignal.timeout(DATA_FETCH_TIMEOUT_MS),
+            }),
+        }),
+    );
+}
 
-// 提取构建逻辑，让 TypeScript 推断包含 rest() 扩展（.request() 方法）的完整类型
-function buildDirectusClient() {
+function buildServiceClient() {
     return createDirectus<DirectusSchema>(getDirectusUrl())
         .with(staticToken(getStaticToken()))
         .with(
@@ -79,88 +124,83 @@ function buildDirectusClient() {
         );
 }
 
-let clientSingleton: ReturnType<typeof buildDirectusClient> | null = null;
+let restClientSingleton: ReturnType<typeof buildRestClient> | null = null;
+let serviceClientSingleton: ReturnType<typeof buildServiceClient> | null = null;
 
-function getDirectusClient() {
-    if (clientSingleton) return clientSingleton;
-    clientSingleton = buildDirectusClient();
-    console.info("[directus/client] 客户端初始化");
-    return clientSingleton;
+function getRestClient() {
+    if (restClientSingleton) {
+        return restClientSingleton;
+    }
+    restClientSingleton = buildRestClient();
+    console.info("[directus/client] 公共客户端初始化");
+    return restClientSingleton;
 }
 
-function getDirectusErrorStatus(error: unknown): number | null {
-    if (!isDirectusError(error)) {
-        return null;
+function getServiceClient() {
+    if (serviceClientSingleton) {
+        return serviceClientSingleton;
     }
-    const response = error.response;
-    if (response instanceof Response) {
-        return response.status;
-    }
-    return null;
+    serviceClientSingleton = buildServiceClient();
+    console.info("[directus/client] 服务端客户端初始化");
+    return serviceClientSingleton;
 }
 
-function getDirectusErrorCodes(error: unknown): string[] {
-    if (!isDirectusError(error) || !Array.isArray(error.errors)) {
-        return [];
-    }
-    return error.errors
-        .map((entry) => entry.extensions?.code)
-        .filter(
-            (code): code is string => typeof code === "string" && Boolean(code),
-        );
+function getCurrentScope(): DirectusRequestScope {
+    return directusScopeStorage.getStore() ?? { kind: "service" };
 }
 
-function toDirectusError(action: string, error: unknown): AppError {
-    if (!isDirectusError(error)) {
-        if (error instanceof AppError) {
-            return error;
-        }
-        return error instanceof Error
-            ? internal(`[directus/client] ${action}失败: ${error.message}`)
-            : internal(`[directus/client] ${action}失败: ${String(error)}`);
-    }
-
-    const status = getDirectusErrorStatus(error);
-    const statusText =
-        typeof status === "number" ? `(${status})` : "(unknown status)";
-    const codeText = getDirectusErrorCodes(error).join(",");
-    const detail =
-        error.errors
-            ?.map((entry) => {
-                const code = entry.extensions?.code || "UNKNOWN";
-                return `${code}:${entry.message}`;
-            })
-            .join("; ") || error.message;
-
-    const suffix = codeText ? ` codes=${codeText}` : "";
-    const message = `[directus/client] ${action}失败 ${statusText}${suffix}: ${detail}`;
-
-    if (status === 403) {
-        return new AppError("DIRECTUS_FORBIDDEN", message, 403);
-    }
-    if (status === 404) {
-        return new AppError("DIRECTUS_NOT_FOUND", message, 404);
-    }
-    return new AppError("DIRECTUS_ERROR", message, status || 500);
+export async function runWithDirectusPublicAccess<T>(
+    task: () => Promise<T>,
+): Promise<T> {
+    return await directusScopeStorage.run({ kind: "public" }, task);
 }
 
-function isDirectusItemNotFound(error: unknown): boolean {
-    const status = getDirectusErrorStatus(error);
-    if (status === 404) {
-        return true;
-    }
-    return getDirectusErrorCodes(error).includes("ITEM_NOT_FOUND");
+export async function runWithDirectusServiceAccess<T>(
+    task: () => Promise<T>,
+): Promise<T> {
+    return await directusScopeStorage.run({ kind: "service" }, task);
 }
 
-async function runDirectusRequest<T>(
+export async function runWithDirectusUserAccess<T>(
+    accessToken: string,
+    task: () => Promise<T>,
+): Promise<T> {
+    const normalizedToken = String(accessToken || "").trim();
+    if (!normalizedToken) {
+        throw internal("缺少 Directus Access Token");
+    }
+    return await directusScopeStorage.run(
+        { kind: "user", accessToken: normalizedToken },
+        task,
+    );
+}
+
+async function executeDirectusRequest<T>(
     action: string,
-    request: () => Promise<T>,
+    request: unknown,
 ): Promise<T> {
     try {
-        return await request();
+        const scope = getCurrentScope();
+        if (scope.kind === "service") {
+            return await getServiceClient().request(request as never);
+        }
+        if (scope.kind === "public") {
+            return await getRestClient().request(request as never);
+        }
+        return await getRestClient().request(
+            withToken(scope.accessToken, request as never),
+        );
     } catch (error) {
         throw toDirectusError(action, error);
     }
+}
+
+function parseAggregateCountValue(input: unknown): number {
+    if (typeof input === "number" && Number.isFinite(input)) {
+        return input;
+    }
+    const parsed = parseInt(String(input ?? "0"), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function assertNonSystemCollection(collection: keyof DirectusSchema): void {
@@ -171,34 +211,40 @@ function assertNonSystemCollection(collection: keyof DirectusSchema): void {
     }
 }
 
+function parseItemArrayResponse<T>(input: unknown): T[] {
+    if (Array.isArray(input)) {
+        return input as T[];
+    }
+    if (
+        input &&
+        typeof input === "object" &&
+        Array.isArray((input as { data?: unknown[] }).data)
+    ) {
+        return ((input as { data: unknown[] }).data ?? []) as T[];
+    }
+    return [];
+}
+
 export async function readMany<K extends keyof DirectusSchema>(
     collection: K,
     query?: DirectusQuery,
 ): Promise<DirectusSchema[K]> {
     if (collection === "directus_users") {
-        return (await runDirectusRequest("读取用户列表", async () => {
-            return await getDirectusClient().request(readUsers(query as never));
-        })) as DirectusSchema[K];
+        return (await executeDirectusRequest(
+            "读取用户列表",
+            readUsers(query as never),
+        )) as DirectusSchema[K];
     }
     if (collection === "directus_files") {
-        return (await runDirectusRequest("读取文件列表", async () => {
-            return await getDirectusClient().request(readFiles(query as never));
-        })) as DirectusSchema[K];
+        return (await executeDirectusRequest(
+            "读取文件列表",
+            readFiles(query as never),
+        )) as DirectusSchema[K];
     }
 
-    return (await runDirectusRequest(
+    return (await executeDirectusRequest(
         `读取集合 ${String(collection)} 列表`,
-        async () => {
-            return await getDirectusClient().request(
-                readItems(
-                    collection as Exclude<
-                        K,
-                        "directus_users" | "directus_files"
-                    >,
-                    query as never,
-                ),
-            );
-        },
+        readItems(collection as never, query as never),
     )) as DirectusSchema[K];
 }
 
@@ -209,7 +255,8 @@ export async function readOneById<K extends keyof DirectusSchema>(
 ): Promise<DirectusSchema[K][number] | null> {
     try {
         if (collection === "directus_users") {
-            const user = await getDirectusClient().request(
+            const user = await executeDirectusRequest(
+                "读取用户明细",
                 readUser(id, {
                     fields: query?.fields,
                 } as never),
@@ -217,8 +264,9 @@ export async function readOneById<K extends keyof DirectusSchema>(
             return user as DirectusSchema[K][number];
         }
 
-        const item = await getDirectusClient().request(
-            readItem(collection as Exclude<K, "directus_users">, id, {
+        const item = await executeDirectusRequest(
+            `读取集合 ${String(collection)} 明细`,
+            readItem(collection as never, id, {
                 fields: query?.fields,
                 deep: query?.deep,
             } as never),
@@ -236,25 +284,52 @@ export async function countItems<K extends keyof DirectusSchema>(
     collection: K,
     filter?: JsonObject,
 ): Promise<number> {
-    const result = await runDirectusRequest(
+    const result = await executeDirectusRequest(
         `统计集合 ${String(collection)} 总数`,
-        async () => {
-            return await getDirectusClient().request(
-                aggregate(
-                    collection as Exclude<K, "directus_users">,
-                    {
-                        aggregate: { count: "*" },
-                        query: filter ? { filter } : {},
-                    } as never,
-                ),
-            );
-        },
+        aggregate(
+            collection as never,
+            {
+                aggregate: { count: "*" },
+                query: filter ? { filter } : {},
+            } as never,
+        ),
     );
     const row = Array.isArray(result) ? result[0] : result;
-    const count = (row as Record<string, unknown>)?.count;
-    return typeof count === "number"
-        ? count
-        : parseInt(String(count ?? "0"), 10) || 0;
+    const count = (row as DirectusAggregateRow)?.count;
+    return parseAggregateCountValue(count);
+}
+
+export async function countItemsGroupedByField<K extends keyof DirectusSchema>(
+    collection: K,
+    groupField: string,
+    filter?: JsonObject,
+): Promise<Map<string, number>> {
+    const result = await executeDirectusRequest(
+        `按 ${groupField} 聚合统计集合 ${String(collection)} 总数`,
+        aggregate(
+            collection as never,
+            {
+                aggregate: { count: "*" },
+                groupBy: [groupField],
+                query: filter ? { filter } : {},
+            } as never,
+        ),
+    );
+
+    const rows = Array.isArray(result) ? result : [result];
+    const counter = new Map<string, number>();
+    for (const row of rows) {
+        const record = row as DirectusAggregateRow;
+        const groupValue = String(record[groupField] ?? "").trim();
+        if (!groupValue) {
+            continue;
+        }
+        const count = parseAggregateCountValue(record.count);
+        if (count > 0) {
+            counter.set(groupValue, count);
+        }
+    }
+    return counter;
 }
 
 export async function createOne<K extends keyof DirectusSchema>(
@@ -263,19 +338,15 @@ export async function createOne<K extends keyof DirectusSchema>(
     query?: { fields?: string[] },
 ): Promise<DirectusSchema[K][number]> {
     assertNonSystemCollection(collection);
-    return (await runDirectusRequest(
+    return (await executeDirectusRequest(
         `创建集合 ${String(collection)} 数据`,
-        async () => {
-            return await getDirectusClient().request(
-                createItem(
-                    collection,
-                    payload as never,
-                    {
-                        fields: query?.fields,
-                    } as never,
-                ),
-            );
-        },
+        createItem(
+            collection as never,
+            payload as never,
+            {
+                fields: query?.fields,
+            } as never,
+        ),
     )) as DirectusSchema[K][number];
 }
 
@@ -293,20 +364,16 @@ export async function updateOne<K extends keyof DirectusSchema>(
               ? [...SAFE_DIARY_FIELDS]
               : undefined;
 
-    return (await runDirectusRequest(
+    return (await executeDirectusRequest(
         `更新集合 ${String(collection)} 数据`,
-        async () => {
-            return await getDirectusClient().request(
-                updateItem(
-                    collection,
-                    id,
-                    payload as never,
-                    {
-                        fields: resolvedFields,
-                    } as never,
-                ),
-            );
-        },
+        updateItem(
+            collection as never,
+            id,
+            payload as never,
+            {
+                fields: resolvedFields,
+            } as never,
+        ),
     )) as DirectusSchema[K][number];
 }
 
@@ -316,20 +383,16 @@ export async function updateOneWithoutReadback<K extends keyof DirectusSchema>(
     payload: Partial<DirectusSchema[K][number]>,
 ): Promise<void> {
     assertNonSystemCollection(collection);
-    await runDirectusRequest(
+    await executeDirectusRequest(
         `更新集合 ${String(collection)} 数据`,
-        async () => {
-            await getDirectusClient().request(
-                updateItem(
-                    collection,
-                    id,
-                    payload as never,
-                    {
-                        fields: ["id"],
-                    } as never,
-                ),
-            );
-        },
+        updateItem(
+            collection as never,
+            id,
+            payload as never,
+            {
+                fields: ["id"],
+            } as never,
+        ),
     );
 }
 
@@ -338,11 +401,9 @@ export async function deleteOne<K extends keyof DirectusSchema>(
     id: string,
 ): Promise<void> {
     assertNonSystemCollection(collection);
-    await runDirectusRequest(
+    await executeDirectusRequest(
         `删除集合 ${String(collection)} 数据`,
-        async () => {
-            await getDirectusClient().request(deleteItem(collection, id));
-        },
+        deleteItem(collection as never, id),
     );
 }
 
@@ -352,17 +413,18 @@ export async function createDirectusUser(payload: {
     first_name?: string;
     last_name?: string;
     status?: string;
+    role?: string;
+    policies?: string[];
 }): Promise<{ id: string }> {
-    const created = await runDirectusRequest("创建 Directus 用户", async () => {
-        return await getDirectusClient().request(
-            createUser(
-                payload as never,
-                {
-                    fields: ["id"],
-                } as never,
-            ),
-        );
-    });
+    const created = await executeDirectusRequest(
+        "创建 Directus 用户",
+        createUser(
+            payload as never,
+            {
+                fields: ["id"],
+            } as never,
+        ),
+    );
 
     const id =
         typeof (created as { id?: unknown }).id === "string"
@@ -378,17 +440,16 @@ export async function updateDirectusUser(
     id: string,
     payload: JsonObject,
 ): Promise<{ id: string }> {
-    const updated = await runDirectusRequest("更新 Directus 用户", async () => {
-        return await getDirectusClient().request(
-            updateUser(
-                id,
-                payload as never,
-                {
-                    fields: ["id"],
-                } as never,
-            ),
-        );
-    });
+    const updated = await executeDirectusRequest(
+        "更新 Directus 用户",
+        updateUser(
+            id,
+            payload as never,
+            {
+                fields: ["id"],
+            } as never,
+        ),
+    );
 
     const userId =
         typeof (updated as { id?: unknown }).id === "string"
@@ -400,15 +461,64 @@ export async function updateDirectusUser(
     return { id: userId };
 }
 
+export async function syncDirectusUserPolicies(params: {
+    userId: string;
+    currentAssignments: DirectusUserPolicyAssignment[];
+    desiredPolicyIds: string[];
+}): Promise<void> {
+    const desiredSet = new Set(
+        params.desiredPolicyIds
+            .map((policyId) => String(policyId || "").trim())
+            .filter(Boolean),
+    );
+    const currentAssignments = params.currentAssignments
+        .map((assignment) => ({
+            id: String(assignment.id || "").trim(),
+            policy: String(assignment.policy || "").trim(),
+        }))
+        .filter((assignment) => assignment.id && assignment.policy);
+
+    const create = Array.from(desiredSet)
+        .filter(
+            (policyId) =>
+                !currentAssignments.some(
+                    (assignment) => assignment.policy === policyId,
+                ),
+        )
+        .map((policyId) => ({ policy: policyId }));
+    const deleteIds = currentAssignments
+        .filter((assignment) => !desiredSet.has(assignment.policy))
+        .map((assignment) => assignment.id);
+
+    if (create.length === 0 && deleteIds.length === 0) {
+        return;
+    }
+
+    await executeDirectusRequest(
+        "同步 Directus 用户策略",
+        updateUser(
+            params.userId,
+            {
+                policies: {
+                    create,
+                    delete: deleteIds,
+                },
+            } as never,
+            {
+                fields: ["id"],
+            } as never,
+        ),
+    );
+}
+
 export async function deleteDirectusUser(id: string): Promise<void> {
-    await runDirectusRequest("删除 Directus 用户", async () => {
-        await getDirectusClient().request(
-            customEndpoint({
-                path: `/users/${encodeURIComponent(id)}`,
-                method: "DELETE",
-            }),
-        );
-    });
+    await executeDirectusRequest(
+        "删除 Directus 用户",
+        customEndpoint({
+            path: `/users/${encodeURIComponent(id)}`,
+            method: "DELETE",
+        }),
+    );
 }
 
 export async function listDirectusUsers(params?: {
@@ -416,23 +526,64 @@ export async function listDirectusUsers(params?: {
     offset?: number;
     search?: string;
 }): Promise<AppUser[]> {
-    return (await runDirectusRequest("读取 Directus 用户列表", async () => {
-        return await getDirectusClient().request(
-            readUsers({
+    return (await executeDirectusRequest(
+        "读取 Directus 用户列表",
+        readUsers({
+            fields: [
+                "id",
+                "email",
+                "first_name",
+                "last_name",
+                "description",
+                "avatar",
+                "status",
+                "role.id",
+                "role.name",
+                "policies.*",
+            ],
+            limit: params?.limit ?? 50,
+            offset: params?.offset ?? 0,
+            search: params?.search,
+        } as never),
+    )) as AppUser[];
+}
+
+export async function listDirectusRoles(): Promise<DirectusRoleRecord[]> {
+    const response = await executeDirectusRequest(
+        "读取 Directus 角色列表",
+        customEndpoint({
+            path: "/roles",
+            method: "GET",
+            params: {
+                limit: 100,
+                fields: ["id", "name", "description"],
+                sort: ["name"],
+            },
+        }),
+    );
+    return parseItemArrayResponse<DirectusRoleRecord>(response);
+}
+
+export async function listDirectusPolicies(): Promise<DirectusPolicyRecord[]> {
+    const response = await executeDirectusRequest(
+        "读取 Directus 策略列表",
+        customEndpoint({
+            path: "/policies",
+            method: "GET",
+            params: {
+                limit: 200,
                 fields: [
                     "id",
-                    "email",
-                    "first_name",
-                    "last_name",
-                    "avatar",
-                    "role",
+                    "name",
+                    "description",
+                    "admin_access",
+                    "app_access",
                 ],
-                limit: params?.limit ?? 50,
-                offset: params?.offset ?? 0,
-                search: params?.search,
-            } as never),
-        );
-    })) as AppUser[];
+                sort: ["name"],
+            },
+        }),
+    );
+    return parseItemArrayResponse<DirectusPolicyRecord>(response);
 }
 
 export async function uploadDirectusFile(params: {
@@ -449,15 +600,11 @@ export async function uploadDirectusFile(params: {
         form.append("folder", params.folder);
     }
 
-    const uploaded = await runDirectusRequest(
+    const uploaded = await executeDirectusRequest(
         "上传 Directus 文件",
-        async () => {
-            return await getDirectusClient().request(
-                uploadFiles(form, {
-                    fields: ["id", "title", "filename_download"],
-                } as never),
-            );
-        },
+        uploadFiles(form, {
+            fields: ["id", "title", "filename_download"],
+        } as never),
     );
 
     const data = Array.isArray(uploaded) ? uploaded[0] : uploaded;
@@ -493,11 +640,14 @@ export async function updateDirectusFileMetadata(
         folder?: string | null;
         uploaded_by?: string | null;
         modified_by?: string | null;
+        app_owner_user_id?: string | null;
+        app_visibility?: "private" | "public" | null;
     },
 ): Promise<void> {
-    await runDirectusRequest("更新 Directus 文件元数据", async () => {
-        await getDirectusClient().request(updateFile(id, payload as never));
-    });
+    await executeDirectusRequest(
+        "更新 Directus 文件元数据",
+        updateFile(id, payload as never),
+    );
 }
 
 export async function updateManyItemsByFilter(params: {
@@ -505,76 +655,50 @@ export async function updateManyItemsByFilter(params: {
     filter: JsonObject;
     data: JsonObject;
 }): Promise<void> {
-    const rows = await runDirectusRequest(
+    const rows = await executeDirectusRequest(
         `读取集合 ${params.collection} 批量更新候选`,
-        async () => {
-            return await getDirectusClient().request(
-                customEndpoint({
-                    path: `/items/${encodeURIComponent(params.collection)}`,
-                    method: "GET",
-                    params: {
-                        filter: params.filter,
-                        fields: ["id"],
-                        limit: 5000,
-                    },
-                }),
-            );
-        },
+        customEndpoint({
+            path: `/items/${encodeURIComponent(params.collection)}`,
+            method: "GET",
+            params: {
+                filter: params.filter,
+                fields: ["id"],
+                limit: 5000,
+            },
+        }),
     );
-    const list = Array.isArray(rows)
-        ? rows
-        : Array.isArray((rows as { data?: unknown[] })?.data)
-          ? ((rows as { data: unknown[] }).data ?? [])
-          : [];
-    const keys = list
-        .map((item) => {
-            if (item && typeof item === "object") {
-                const record = item as { id?: unknown };
-                return typeof record.id === "string"
-                    ? record.id
-                    : String(record.id ?? "");
-            }
-            return "";
-        })
-        .map((id) => id.trim())
+
+    const keys = parseItemArrayResponse<Record<string, unknown>>(rows)
+        .map((item) => String(item.id ?? "").trim())
         .filter(Boolean);
     if (keys.length === 0) {
         return;
     }
-    await runDirectusRequest(
+
+    await executeDirectusRequest(
         `批量更新集合 ${params.collection} 数据`,
-        async () => {
-            await getDirectusClient().request(
-                customEndpoint({
-                    path: `/items/${encodeURIComponent(params.collection)}`,
-                    method: "PATCH",
-                    body: {
-                        keys,
-                        data: params.data,
-                    } as never,
-                }),
-            );
-        },
+        customEndpoint({
+            path: `/items/${encodeURIComponent(params.collection)}`,
+            method: "PATCH",
+            body: {
+                keys,
+                data: params.data,
+            } as never,
+        }),
     );
 }
 
-/**
- * 删除 Directus 中的文件。
- * 删除失败时仅打印警告，不抛出异常，避免阻断业务流程。
- */
 export async function deleteDirectusFile(fileId: string): Promise<void> {
     if (!fileId) {
         return;
     }
     try {
-        await runDirectusRequest("删除 Directus 文件", async () => {
-            await getDirectusClient().request(deleteFile(fileId));
-        });
-    } catch (err) {
+        await executeDirectusRequest("删除 Directus 文件", deleteFile(fileId));
+    } catch (error) {
         console.warn(
             "[directus/client] 删除文件失败，可能已不存在:",
             fileId,
-            err,
+            error,
         );
     }
 }
@@ -583,21 +707,22 @@ export async function readDirectusAssetResponse(params: {
     fileId: string;
     query?: DirectusAssetQuery;
 }): Promise<Response> {
-    const result = await runDirectusRequest("读取 Directus 资源", async () => {
-        return await getDirectusClient().request(
-            customEndpoint<Response>({
-                path: `/assets/${encodeURIComponent(params.fileId)}`,
-                method: "GET",
-                params: params.query,
-                headers: {
-                    Accept: "*/*",
-                },
-            }),
-        );
-    });
+    const result = await executeDirectusRequest(
+        "读取 Directus 资源",
+        customEndpoint<Response>({
+            path: `/assets/${encodeURIComponent(params.fileId)}`,
+            method: "GET",
+            params: params.query,
+            headers: {
+                Accept: "*/*",
+            },
+        }),
+    );
 
     if (result instanceof Response) {
         return result;
     }
     throw internal("资源响应格式无效");
 }
+
+export type { DirectusPolicyRecord, DirectusRoleRecord, DirectusRequestScope };

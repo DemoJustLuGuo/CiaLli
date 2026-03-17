@@ -6,12 +6,14 @@ import { getSessionUser } from "@/server/auth/session";
 import { buildDirectusAssetUrl } from "@/server/directus-auth";
 
 export const prerender = false;
+const AUTH_NO_STORE = "private, no-store";
 
 function json<T>(data: T, init?: ResponseInit): Response {
     return new Response(JSON.stringify(data), {
         ...init,
         headers: {
             "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": AUTH_NO_STORE,
             ...(init?.headers ?? {}),
         },
     });
@@ -21,7 +23,7 @@ export async function GET(context: APIContext): Promise<Response> {
     const user = await getSessionUser(context);
     if (!user) {
         return json(
-            { ok: false, message: i18n(I18nKey.apiAuthNotLoggedIn) },
+            { ok: false, message: i18n(I18nKey.interactionApiAuthNotLoggedIn) },
             { status: 401 },
         );
     }
@@ -33,15 +35,13 @@ export async function GET(context: APIContext): Promise<Response> {
         const displayName = String(profile.display_name || "").trim();
         const name =
             displayName || username || user.name || user.email || "Member";
-        const avatarUrl =
-            profile.avatar_url ||
-            (profile.avatar_file
-                ? buildDirectusAssetUrl(profile.avatar_file, {
-                      width: 128,
-                      height: 128,
-                      fit: "cover",
-                  })
-                : user.avatarUrl);
+        const avatarUrl = profile.avatar_file
+            ? buildDirectusAssetUrl(profile.avatar_file, {
+                  width: 128,
+                  height: 128,
+                  fit: "cover",
+              })
+            : user.avatarUrl;
 
         return json({
             ok: true,
@@ -59,7 +59,7 @@ export async function GET(context: APIContext): Promise<Response> {
         return json(
             {
                 ok: false,
-                message: i18n(I18nKey.apiAuthGetUserFailed),
+                message: i18n(I18nKey.interactionApiAuthGetUserFailed),
             },
             { status: 500 },
         );

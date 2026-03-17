@@ -44,89 +44,115 @@ function clearDeactivationTimer(): void {
     }
 }
 
-function detectEnterSkeletonMode(): EnterSkeletonMode {
-    if (document.querySelector('[data-enter-skeleton-page="publish-page"]')) {
-        return "publish-page";
+type SkeletonDetectRule = {
+    selector: string;
+    mode: EnterSkeletonMode;
+};
+
+const SKELETON_TARGET_RULES: SkeletonDetectRule[] = [
+    {
+        selector: '[data-enter-skeleton-page="publish-page"]',
+        mode: "publish-page",
+    },
+    {
+        selector: '[data-enter-skeleton-target="post-detail"]',
+        mode: "post-detail",
+    },
+    {
+        selector: '[data-enter-skeleton-target="post-card"]',
+        mode: "post-card",
+    },
+];
+
+const SKELETON_PAGE_RULES: SkeletonDetectRule[] = [
+    { selector: '[data-enter-skeleton-page="user-home"]', mode: "user-home" },
+    {
+        selector: '[data-enter-skeleton-page="user-bangumi"]',
+        mode: "user-bangumi",
+    },
+    {
+        selector: '[data-enter-skeleton-page="user-albums"]',
+        mode: "user-albums",
+    },
+    {
+        selector: '[data-enter-skeleton-page="user-diary"]',
+        mode: "user-diary",
+    },
+    {
+        selector: '[data-enter-skeleton-page="admin-dashboard"]',
+        mode: "admin-dashboard",
+    },
+    {
+        selector: '[data-enter-skeleton-page="admin-users"]',
+        mode: "admin-users",
+    },
+    {
+        selector: '[data-enter-skeleton-page="admin-site-settings"]',
+        mode: "admin-site-settings",
+    },
+    {
+        selector: '[data-enter-skeleton-page="admin-bulletin-settings"]',
+        mode: "admin-bulletin-settings",
+    },
+    {
+        selector: '[data-enter-skeleton-page="admin-about-settings"]',
+        mode: "admin-about-settings",
+    },
+    {
+        selector: '[data-enter-skeleton-page="me-settings"]',
+        mode: "me-settings",
+    },
+    {
+        selector: '[data-enter-skeleton-page="about-page"]',
+        mode: "about-page",
+    },
+    {
+        selector: '[data-enter-skeleton-page="friends-page"]',
+        mode: "friends-page",
+    },
+    {
+        selector: '[data-enter-skeleton-page="stats-page"]',
+        mode: "stats-page",
+    },
+    {
+        selector: '[data-enter-skeleton-page="bulletin-page"]',
+        mode: "bulletin-page",
+    },
+    {
+        selector: '[data-enter-skeleton-page="auth-login"]',
+        mode: "auth-login",
+    },
+    {
+        selector: '[data-enter-skeleton-page="auth-register"]',
+        mode: "auth-register",
+    },
+    { selector: '[data-enter-skeleton-page="rss-page"]', mode: "rss-page" },
+    { selector: '[data-enter-skeleton-page="atom-page"]', mode: "atom-page" },
+];
+
+function matchSkeletonRule(
+    rules: SkeletonDetectRule[],
+    targetDocument: Document,
+): EnterSkeletonMode | null {
+    for (const rule of rules) {
+        if (targetDocument.querySelector(rule.selector)) {
+            return rule.mode;
+        }
     }
-    if (document.querySelector('[data-enter-skeleton-target="post-detail"]')) {
-        return "post-detail";
-    }
-    if (document.querySelector('[data-enter-skeleton-target="post-card"]')) {
-        return "post-card";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="user-home"]')) {
-        return "user-home";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="user-bangumi"]')) {
-        return "user-bangumi";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="user-albums"]')) {
-        return "user-albums";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="user-diary"]')) {
-        return "user-diary";
-    }
-    if (
-        document.querySelector('[data-enter-skeleton-page="admin-dashboard"]')
-    ) {
-        return "admin-dashboard";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="admin-users"]')) {
-        return "admin-users";
-    }
-    if (
-        document.querySelector(
-            '[data-enter-skeleton-page="admin-site-settings"]',
-        )
-    ) {
-        return "admin-site-settings";
-    }
-    if (
-        document.querySelector(
-            '[data-enter-skeleton-page="admin-bulletin-settings"]',
-        )
-    ) {
-        return "admin-bulletin-settings";
-    }
-    if (
-        document.querySelector(
-            '[data-enter-skeleton-page="admin-about-settings"]',
-        )
-    ) {
-        return "admin-about-settings";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="me-settings"]')) {
-        return "me-settings";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="about-page"]')) {
-        return "about-page";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="friends-page"]')) {
-        return "friends-page";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="stats-page"]')) {
-        return "stats-page";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="bulletin-page"]')) {
-        return "bulletin-page";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="auth-login"]')) {
-        return "auth-login";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="auth-register"]')) {
-        return "auth-register";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="rss-page"]')) {
-        return "rss-page";
-    }
-    if (document.querySelector('[data-enter-skeleton-page="atom-page"]')) {
-        return "atom-page";
-    }
-    return "fallback";
+    return null;
 }
 
-function applyMode(mode: EnterSkeletonMode): void {
-    const root = getRoot();
+function detectEnterSkeletonMode(
+    targetDocument: Document = document,
+): EnterSkeletonMode {
+    return (
+        matchSkeletonRule(SKELETON_TARGET_RULES, targetDocument) ??
+        matchSkeletonRule(SKELETON_PAGE_RULES, targetDocument) ??
+        "fallback"
+    );
+}
+
+function applyMode(mode: EnterSkeletonMode, root: HTMLElement | null): void {
     if (!root) {
         return;
     }
@@ -153,9 +179,9 @@ export function activateEnterSkeleton(): void {
     activationToken += 1;
     clearDeactivationTimer();
 
-    const mode = detectEnterSkeletonMode();
+    const mode = detectEnterSkeletonMode(document);
     activatedAt = performance.now();
-    applyMode(mode);
+    applyMode(mode, getRoot());
 }
 
 export function deactivateEnterSkeleton(): void {
@@ -193,4 +219,33 @@ export function forceResetEnterSkeleton(): void {
     clearDeactivationTimer();
     activatedAt = 0;
     clearMode();
+}
+
+export function isEnterSkeletonActive(): boolean {
+    const root = getRoot();
+    if (!root) {
+        return false;
+    }
+    return root.classList.contains(ACTIVE_CLASS);
+}
+
+export function syncEnterSkeletonStateToIncomingDocument(
+    newDocument: Document,
+): void {
+    const currentRoot = getRoot();
+    const incomingRoot = newDocument.documentElement;
+    if (!currentRoot || !(incomingRoot instanceof HTMLElement)) {
+        return;
+    }
+
+    const isActive = currentRoot.classList.contains(ACTIVE_CLASS);
+    incomingRoot.classList.toggle(ACTIVE_CLASS, isActive);
+    if (!isActive) {
+        incomingRoot.removeAttribute(MODE_ATTR);
+        return;
+    }
+
+    // 在 swap 前为 incoming 文档提前解析骨架模式，避免交换后再次激活造成“二次揭幕”
+    const incomingMode = detectEnterSkeletonMode(newDocument);
+    incomingRoot.setAttribute(MODE_ATTR, incomingMode);
 }

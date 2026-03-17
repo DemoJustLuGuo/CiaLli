@@ -4,6 +4,7 @@ type FancyboxStatic = {
 };
 
 type FancyboxConfig = {
+    Hash?: boolean | object;
     Thumbs?: object;
     Toolbar?: object;
     animated?: boolean;
@@ -59,6 +60,7 @@ export function createFancyboxController(): FancyboxController {
             }
 
             const commonConfig: FancyboxConfig = {
+                Hash: false,
                 Thumbs: { autoStart: true, showOnStart: "yes" },
                 Toolbar: {
                     display: {

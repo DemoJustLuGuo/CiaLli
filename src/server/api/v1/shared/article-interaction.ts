@@ -130,27 +130,29 @@ export async function loadArticleInteractionSnapshot(input: {
     };
 }
 
-export function invalidateArticleInteractionAggregate(articleId: string): void {
+export async function invalidateArticleInteractionAggregate(
+    articleId: string,
+): Promise<void> {
     const normalizedArticleId = normalizeIdentity(articleId);
     if (!normalizedArticleId) {
         return;
     }
-    void cacheManager.invalidate(
+    await cacheManager.invalidate(
         "article-interaction",
         buildAggregateKey(normalizedArticleId),
     );
 }
 
-export function invalidateArticleInteractionViewerState(
+export async function invalidateArticleInteractionViewerState(
     articleId: string,
     viewerId: string,
-): void {
+): Promise<void> {
     const normalizedArticleId = normalizeIdentity(articleId);
     const normalizedViewerId = normalizeIdentity(viewerId);
     if (!normalizedArticleId || !normalizedViewerId) {
         return;
     }
-    void cacheManager.invalidate(
+    await cacheManager.invalidate(
         "article-interaction",
         buildViewerKey(normalizedArticleId, normalizedViewerId),
     );
