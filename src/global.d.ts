@@ -1,17 +1,9 @@
 import type { SiteConfig } from "./types/config";
 import type { Translation } from "./i18n/translation";
 import type { ResolvedSiteSettings } from "./types/site-settings";
-import type { ProgressOverlayApi } from "./scripts/progress-overlay-manager";
+import type { ProgressOverlayApi } from "@/scripts/shared/progress-overlay-manager";
 
 export {};
-
-type UmamiWebsiteStats = {
-    pageviews?: number;
-    visits?: number;
-    visitors?: number;
-    bounces?: number;
-    totaltime?: number;
-};
 
 declare global {
     interface HTMLElementTagNameMap {
@@ -34,21 +26,6 @@ declare global {
         _calendarFilterListenerAttached?: boolean;
 
         panelManager?: typeof import("./utils/panel-manager").panelManager;
-
-        getUmamiWebsiteStats?: (
-            baseUrl: string,
-            apiKey: string,
-            websiteId: string,
-        ) => Promise<UmamiWebsiteStats>;
-        getUmamiPageStats?: (
-            baseUrl: string,
-            apiKey: string,
-            websiteId: string,
-            urlPath: string,
-            startAt?: number,
-            endAt?: number,
-        ) => Promise<{ pageviews?: number; visitors?: number }>;
-        clearUmamiShareCache?: () => void;
 
         floatingTOCInit?: () => void;
         iconifyLoaded?: boolean;

@@ -47,12 +47,6 @@ const siteConfig = buildLegacySiteConfig(
 );
 const profileName = resolvedSiteSettings.settings.profile.name;
 const musicPlayerSettings = resolvedSiteSettings.settings.musicPlayer;
-const umamiConfig = {
-  enabled: resolvedSiteSettings.settings.umami.enabled,
-  apiKey: import.meta.env.UMAMI_API_KEY || "api_xxxxxxxx",
-  baseUrl: resolvedSiteSettings.settings.umami.baseUrl,
-  scripts: resolvedSiteSettings.settings.umami.scripts,
-};
 const analyticsConfig = {
   gtmId: String(resolvedSiteSettings.settings.analytics.gtmId || "").trim(),
   clarityId: String(
@@ -132,8 +126,6 @@ const pageWidthRem = `${PAGE_WIDTH}rem`;
 const bannerHeightHomeVh = `${BANNER_HEIGHT_HOME}vh`;
 const bannerHeightVh = `${BANNER_HEIGHT}vh`;
 
-const umamiEnabled = umamiConfig.enabled || false;
-const umamiScripts = umamiConfig.scripts || ""; // 获取 Umami scripts 配置
 const gtmId = analyticsConfig.gtmId;
 const clarityId = analyticsConfig.clarityId;
 const analyticsEnabled = Boolean(gtmId || clarityId);
@@ -433,9 +425,6 @@ const bodyClassName = [
       title={profileName}
       href={`${Astro.site}rss.xml`}
     />
-
-    <!-- Umami 统计 -->
-    {umamiEnabled && umamiScripts && <Fragment set:html={umamiScripts} />}
   </head>
   <body
     class={bodyClassName}
@@ -524,25 +513,25 @@ const bodyClassName = [
 
 <!-- Mermaid 图表渲染 -->
 <script>
-  import "../scripts/mermaid-runtime";
+  import "@/scripts/markdown/mermaid/runtime";
 </script>
 
 <!-- GitHub 卡片 runtime -->
 <script>
-  import "../scripts/github-card-runtime";
+  import "@/scripts/markdown/github-card-runtime";
 </script>
 
 <!-- 代码块折叠功能 -->
 <script>
-  import "../scripts/code-collapse.js";
+  import "@/scripts/markdown/code-collapse.js";
 </script>
 
 <!-- 登录提示覆盖层 -->
 <script>
-  import "../scripts/dialogs";
+  import "@/scripts/shared/dialogs";
 </script>
 
 <!-- 主题切换综合性能优化器（包含代码块优化、重型元素优化、性能诊断） -->
 <script>
-  import "../scripts/theme-optimizer.js";
+  import "@/scripts/layout/theme-optimizer.js";
 </script>
