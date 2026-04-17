@@ -1,6 +1,7 @@
 import { showConfirmDialog, showNoticeDialog } from "@/scripts/shared/dialogs";
 import { navigateToPage } from "@/utils/navigation-utils";
 import { getCsrfToken } from "@/utils/csrf";
+import type { AuthState } from "@/scripts/auth/state";
 
 export type DetailElements = {
     likeBtn: HTMLButtonElement | null;
@@ -222,6 +223,116 @@ export type LikeActionState = {
     likeCount: number;
     likePending: boolean;
 };
+
+const articleViewerLikeStateRequests = new Map<string, Promise<boolean>>();
+
+function buildViewerLikeStateCacheKey(
+    contentType: string,
+    contentId: string,
+    userId: string,
+): string {
+    return `${userId}:${contentType}:${contentId}`;
+}
+
+type ViewerLikeStateResponse = {
+    ok?: boolean;
+    liked?: boolean;
+};
+
+export function resetArticleViewerLikeStateRequestsForTest(): void {
+    articleViewerLikeStateRequests.clear();
+}
+
+function resolveViewerLikeStateEndpoint(
+    contentType: string,
+    contentId: string,
+): string | null {
+    if (contentType === "article") {
+        return `/api/v1/me/article-likes/state/${encodeURIComponent(contentId)}`;
+    }
+    if (contentType === "diary") {
+        return `/api/v1/me/diary-likes/state/${encodeURIComponent(contentId)}`;
+    }
+    return null;
+}
+
+export async function loadViewerLikeState(input: {
+    contentType: string;
+    contentId: string;
+    authState: AuthState;
+    fetchImpl?: typeof fetch;
+}): Promise<boolean | null> {
+    const normalizedContentId = String(input.contentId || "").trim();
+    const normalizedUserId = String(input.authState.userId || "").trim();
+    if (
+        !normalizedContentId ||
+        !input.authState.isLoggedIn ||
+        !normalizedUserId
+    ) {
+        return null;
+    }
+    const endpoint = resolveViewerLikeStateEndpoint(
+        input.contentType,
+        normalizedContentId,
+    );
+    if (!endpoint) {
+        return null;
+    }
+
+    const requestKey = buildViewerLikeStateCacheKey(
+        input.contentType,
+        normalizedContentId,
+        normalizedUserId,
+    );
+    const existingRequest = articleViewerLikeStateRequests.get(requestKey);
+    if (existingRequest) {
+        return await existingRequest;
+    }
+
+    // 详情页桌面/移动双浮条会并发初始化，这里按 userId + articleId 做单飞，避免重复打接口。
+    const request = (async () => {
+        try {
+            const response = await (input.fetchImpl ?? fetch)(endpoint, {
+                method: "GET",
+                credentials: "include",
+                headers: {
+                    Accept: "application/json",
+                },
+                cache: "no-store",
+            });
+            if (!response.ok) {
+                return false;
+            }
+            const data = (await response
+                .json()
+                .catch(() => null)) as ViewerLikeStateResponse | null;
+            return Boolean(data?.ok && data.liked);
+        } catch (error) {
+            console.warn(
+                "[detail-action] sync viewer like state failed:",
+                error,
+            );
+            return false;
+        }
+    })();
+
+    articleViewerLikeStateRequests.set(requestKey, request);
+    try {
+        return await request;
+    } finally {
+        // 只复用同一时刻的并发请求，完成后立即清理，避免把旧 liked 状态长时间留在内存里。
+        articleViewerLikeStateRequests.delete(requestKey);
+    }
+}
+
+export async function loadArticleViewerLikeState(input: {
+    contentType: string;
+    contentId: string;
+    authState: AuthState;
+    fetchImpl?: typeof fetch;
+}): Promise<boolean | null> {
+    return await loadViewerLikeState(input);
+}
 
 export type LikeActionContext = {
     contentType: string;

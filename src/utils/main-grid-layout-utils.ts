@@ -1,9 +1,11 @@
 import type { MarkdownHeading } from "astro";
 import type {
-    SiteConfig,
+    RuntimeSiteConfig,
     WidgetComponentConfig,
     WidgetComponentType,
 } from "@/types/config";
+import { cacheManager } from "@/server/cache/manager";
+import { createSingleFlightRunner } from "@/server/utils/single-flight";
 import { widgetManager } from "@utils/widget-manager";
 import { BANNER_HEIGHT_HOME } from "../constants/constants";
 
@@ -17,6 +19,7 @@ export type MainGridLayoutProps = {
     leftSidebarMobilePreset?: LeftSidebarMobilePreset;
     rightSidebarMobilePreset?: RightSidebarMobilePreset;
     hasCustomRightSidebarContent?: boolean;
+    pageKind?: string;
 };
 
 export type LeftSidebarMobilePreset =
@@ -187,32 +190,68 @@ export function normalizeBannerList(value: string | string[]): string[] {
     return [];
 }
 
-export async function getBannerImages(
-    siteConfig: SiteConfig,
-): Promise<string[]> {
-    let bannerSrc = siteConfig.banner.src;
+const BANNER_IMAGES_CACHE_KEY = "default";
 
-    if (siteConfig.banner.imageApi?.enable && siteConfig.banner.imageApi?.url) {
-        try {
-            const response = await fetch(siteConfig.banner.imageApi.url);
-            const text = await response.text();
-            const apiImages = text
-                .split("\n")
-                .map((line) => line.trim())
-                .filter(Boolean);
-
-            if (apiImages.length > 0) {
-                bannerSrc = apiImages;
-            }
-        } catch (error) {
-            console.warn(
-                "[main-grid-layout] failed to fetch images from API:",
-                error,
+const refreshBannerImagesSingleFlight = createSingleFlightRunner(
+    async (imageApiUrl: string): Promise<string[]> => {
+        const response = await fetch(imageApiUrl);
+        const text = await response.text();
+        const images = text
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean);
+        if (images.length > 0) {
+            await cacheManager.set(
+                "banner-images",
+                BANNER_IMAGES_CACHE_KEY,
+                images,
             );
+        }
+        return images;
+    },
+    (imageApiUrl: string) => imageApiUrl,
+);
+
+function refreshBannerImagesInBackground(imageApiUrl: string): void {
+    // banner 外部源只做后台刷新，避免首屏 SSR 等待第三方接口。
+    void refreshBannerImagesSingleFlight(imageApiUrl).catch((error) => {
+        console.warn(
+            "[main-grid-layout] failed to refresh banner images from API:",
+            error,
+        );
+    });
+}
+
+export async function getBannerImages(
+    runtimeSiteConfig: RuntimeSiteConfig,
+): Promise<string[]> {
+    const configuredImages = normalizeBannerList(runtimeSiteConfig.banner.src);
+    const imageApiUrl = String(
+        runtimeSiteConfig.banner.imageApi?.url || "",
+    ).trim();
+    const shouldRefreshFromApi =
+        runtimeSiteConfig.banner.imageApi?.enable === true &&
+        imageApiUrl !== "";
+
+    if (shouldRefreshFromApi) {
+        refreshBannerImagesInBackground(imageApiUrl);
+    }
+
+    if (configuredImages.length > 0) {
+        return configuredImages;
+    }
+
+    if (shouldRefreshFromApi) {
+        const cachedImages = await cacheManager.get<string[]>(
+            "banner-images",
+            BANNER_IMAGES_CACHE_KEY,
+        );
+        if (Array.isArray(cachedImages) && cachedImages.length > 0) {
+            return normalizeBannerList(cachedImages);
         }
     }
 
-    return normalizeBannerList(bannerSrc);
+    return [];
 }
 
 export function resolveGridCols(
@@ -271,13 +310,16 @@ type TocState = {
     shouldShowPostTocSidebar: boolean;
 };
 
-function resolveTocState(siteConfig: SiteConfig, pathname: string): TocState {
-    const tocMode = siteConfig.toc.mode || "float";
+function resolveTocState(
+    runtimeSiteConfig: RuntimeSiteConfig,
+    pathname: string,
+): TocState {
+    const tocMode = runtimeSiteConfig.toc.mode || "float";
     const isFloatTOC = tocMode === "float";
     const isSidebarTOC = tocMode === "sidebar";
     const isPostDetailPage = /^\/posts\/[^/]+\/?$/.test(pathname);
     const shouldShowPostTocSidebar =
-        siteConfig.toc.enable && isSidebarTOC && isPostDetailPage;
+        runtimeSiteConfig.toc.enable && isSidebarTOC && isPostDetailPage;
     return {
         tocMode,
         isFloatTOC,
@@ -295,7 +337,7 @@ type PageKindState = {
 };
 
 function resolvePageKindState(
-    siteConfig: SiteConfig,
+    runtimeSiteConfig: RuntimeSiteConfig,
     pathname: string,
 ): PageKindState {
     const isHomePage = isHomePagePath(pathname);
@@ -305,7 +347,7 @@ function resolvePageKindState(
         /^\/posts\/[^/]+\/edit$/.test(normalizedPath);
     const isFullWidthPage = isPostEditorPage;
     const showHomeText =
-        Boolean(siteConfig.banner.homeText?.enable) && isHomePage;
+        Boolean(runtimeSiteConfig.banner.homeText?.enable) && isHomePage;
     return {
         isHomePage,
         isFullWidthPage,
@@ -321,10 +363,10 @@ type WallpaperPanelState = {
 };
 
 function resolveWallpaperPanelState(
-    siteConfig: SiteConfig,
+    runtimeSiteConfig: RuntimeSiteConfig,
     isHomePage: boolean,
 ): WallpaperPanelState {
-    const configuredWallpaperMode = siteConfig.wallpaperMode.defaultMode;
+    const configuredWallpaperMode = runtimeSiteConfig.wallpaperMode.defaultMode;
     const initialWallpaperMode = isHomePage ? configuredWallpaperMode : "none";
     const mainPanelTop =
         initialWallpaperMode === "banner"
@@ -355,7 +397,7 @@ function resolveMainContentClass(
 }
 
 export function buildMainGridLayoutState(
-    siteConfig: SiteConfig,
+    runtimeSiteConfig: RuntimeSiteConfig,
     bannerImages: string[],
     pathname: string,
     hasCustomRightSidebar: boolean,
@@ -366,13 +408,13 @@ export function buildMainGridLayoutState(
         isSidebarTOC,
         isPostDetailPage,
         shouldShowPostTocSidebar,
-    } = resolveTocState(siteConfig, pathname);
+    } = resolveTocState(runtimeSiteConfig, pathname);
 
     const { isHomePage, isFullWidthPage, isPostEditorPage, showHomeText } =
-        resolvePageKindState(siteConfig, pathname);
+        resolvePageKindState(runtimeSiteConfig, pathname);
 
     const { initialWallpaperMode, mainPanelTop, finalMainPanelTop } =
-        resolveWallpaperPanelState(siteConfig, isHomePage);
+        resolveWallpaperPanelState(runtimeSiteConfig, isHomePage);
 
     const leftSidebarBuckets = getSidebarBuckets(pathname, "left");
     const rightSidebarBuckets = getSidebarBuckets(pathname, "right");
@@ -417,7 +459,7 @@ export function buildMainGridLayoutState(
     );
 
     const hasCarousel =
-        Boolean(siteConfig.banner.carousel?.enable) &&
+        Boolean(runtimeSiteConfig.banner.carousel?.enable) &&
         Array.isArray(bannerImages) &&
         bannerImages.length > 1;
 
