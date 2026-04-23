@@ -19,6 +19,15 @@ export type ProfileRuntimeSettings = {
     avatar: string;
 };
 
+export type AiRuntimeSettings = {
+    enabled: boolean;
+    articleSummaryEnabled: boolean;
+    baseUrl: string;
+    model: string;
+    apiKeyEncrypted: string | null;
+    updatedAt: string | null;
+};
+
 export type EditableSiteSettings = {
     site: {
         title: string;
@@ -41,14 +50,44 @@ export type EditableSiteSettings = {
     profile: ProfileRuntimeSettings;
     announcement: AnnouncementConfig;
     musicPlayer: MusicPlayerConfig;
+    ai: AiRuntimeSettings;
 };
 
 export type SiteSettingsPayload = EditableSiteSettings;
 
-export type StoredSiteSettingsPayload = Omit<
-    SiteSettingsPayload,
-    "announcement"
->;
+export type StoredSiteSettingsSiteSection = {
+    site: Omit<SiteSettingsPayload["site"], "themePreset">;
+    auth: SiteSettingsPayload["auth"];
+    profile: SiteSettingsPayload["profile"];
+};
+
+export type StoredSiteSettingsNavSection = {
+    navbarTitle: SiteSettingsPayload["navbarTitle"];
+    navBar: SiteSettingsPayload["navBar"];
+    banner: Pick<SiteSettingsPayload["banner"], "navbar">;
+};
+
+export type StoredSiteSettingsHomeSection = {
+    wallpaperMode: SiteSettingsPayload["wallpaperMode"];
+    banner: Omit<SiteSettingsPayload["banner"], "navbar">;
+};
+
+export type StoredSiteSettingsArticleSection = {
+    toc: SiteSettingsPayload["toc"];
+};
+
+export type StoredSiteSettingsOtherSection = {
+    musicPlayer: SiteSettingsPayload["musicPlayer"];
+    ai: SiteSettingsPayload["ai"];
+};
+
+export type StoredSiteSettingsSectionFields = {
+    settings_site: StoredSiteSettingsSiteSection;
+    settings_nav: StoredSiteSettingsNavSection;
+    settings_home: StoredSiteSettingsHomeSection;
+    settings_article: StoredSiteSettingsArticleSection;
+    settings_other: StoredSiteSettingsOtherSection;
+};
 
 export type SiteAnnouncementPayload = {
     key: string;
@@ -77,7 +116,12 @@ export type ResolvedSiteSettings = {
 export type AppSiteSettings = {
     id: string;
     key: string;
-    settings: StoredSiteSettingsPayload | null;
+    settings_site: StoredSiteSettingsSiteSection | null;
+    settings_nav: StoredSiteSettingsNavSection | null;
+    settings_home: StoredSiteSettingsHomeSection | null;
+    settings_article: StoredSiteSettingsArticleSection | null;
+    settings_other: StoredSiteSettingsOtherSection | null;
+    theme_preset: SiteThemePreset;
     status: AppStatus;
     sort: number | null;
     user_created: string | null;

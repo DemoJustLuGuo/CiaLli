@@ -4,16 +4,17 @@
  * 包含 bindSettings（及各分区子函数）与 collectXxxPayload 系列函数。
  */
 
+import { DEFAULT_SITE_THEME_PRESET } from "@/config/theme-presets";
 import { t } from "@/scripts/shared/i18n-runtime";
 import { SITE_TIME_ZONE_AUTO_VALUE } from "@/utils/date-utils";
 import {
-    inputVal,
-    textareaVal,
     checked,
-    setVal,
+    inputVal,
+    numberOrFallback,
     setChecked,
     setSelect,
-    numberOrFallback,
+    setVal,
+    textareaVal,
 } from "@/scripts/shared/dom-helpers";
 import type { FaviconItem } from "@/scripts/site-settings/page-editor";
 import {
@@ -55,7 +56,10 @@ function bindSiteBasicFields(site: SettingsObj): void {
             ? (site.keywords as string[]).join(", ")
             : "",
     );
-    setSelect("ss-theme-preset", String(site.themePreset ?? "blue"));
+    setSelect(
+        "ss-theme-preset",
+        String(site.themePreset ?? DEFAULT_SITE_THEME_PRESET),
+    );
     setVal("ss-start-date", String(site.siteStartDate ?? ""));
 }
 
@@ -110,10 +114,7 @@ function bindTypewriterFields(bannerHomeTypewriter: SettingsObj): void {
     );
 }
 
-function bindBannerCarouselAndImageApi(
-    bannerCarousel: SettingsObj,
-    bannerImageApi: SettingsObj,
-): void {
+function bindBannerCarousel(bannerCarousel: SettingsObj): void {
     setChecked(
         "ss-banner-carousel-enable",
         Boolean(bannerCarousel.enable ?? false),
@@ -122,8 +123,6 @@ function bindBannerCarouselAndImageApi(
         "ss-banner-carousel-interval",
         String(bannerCarousel.interval ?? ""),
     );
-    setChecked("ss-banner-image-api-enable", Boolean(bannerImageApi.enable));
-    setVal("ss-banner-image-api-url", String(bannerImageApi.url ?? ""));
 }
 
 function bindBannerHomeTextField(bannerHomeText: SettingsObj): void {
@@ -144,7 +143,6 @@ function bindHomeSection(s: SettingsObj): void {
     const banner = (s.banner ?? {}) as SettingsObj;
     const bannerCarousel = (banner.carousel ?? {}) as SettingsObj;
     const bannerWaves = (banner.waves ?? {}) as SettingsObj;
-    const bannerImageApi = (banner.imageApi ?? {}) as SettingsObj;
     const bannerHomeText = (banner.homeText ?? {}) as SettingsObj;
     const bannerHomeTypewriter = (bannerHomeText.typewriter ??
         {}) as SettingsObj;
@@ -155,16 +153,11 @@ function bindHomeSection(s: SettingsObj): void {
     );
     setSelect("ss-banner-position", String(banner.position ?? "center"));
 
-    bindBannerCarouselAndImageApi(bannerCarousel, bannerImageApi);
+    bindBannerCarousel(bannerCarousel);
     bindBannerHomeTextField(bannerHomeText);
     bindTypewriterFields(bannerHomeTypewriter);
 
     setChecked("ss-banner-waves-enable", Boolean(bannerWaves.enable));
-    setChecked(
-        "ss-banner-waves-performance",
-        Boolean(bannerWaves.performanceMode),
-    );
-
     const bannerDesktopList = normalizeBannerEditorList(banner.src);
     if (bannerDesktopListContainer) {
         fillBannerList(
@@ -221,7 +214,8 @@ export function collectSitePayload(current: SettingsObj): SettingsObj {
                 inputVal("ss-timezone") === SITE_TIME_ZONE_AUTO_VALUE
                     ? null
                     : inputVal("ss-timezone") || null,
-            themePreset: inputVal("ss-theme-preset") || "blue",
+            themePreset:
+                inputVal("ss-theme-preset") || DEFAULT_SITE_THEME_PRESET,
             keywords: inputVal("ss-keywords")
                 .split(",")
                 .map((x) => x.trim())
@@ -292,19 +286,22 @@ function collectBannerHomeText(
     };
 }
 
+function stripBannerImageApi(currentBanner: SettingsObj): SettingsObj {
+    const nextBanner: SettingsObj = { ...currentBanner };
+    delete nextBanner.imageApi;
+    return nextBanner;
+}
+
 function collectBannerPayload(currentBanner: SettingsObj): SettingsObj {
     const currentBannerCarousel = (currentBanner.carousel ?? {}) as SettingsObj;
-    const currentBannerImageApi = (currentBanner.imageApi ?? {}) as SettingsObj;
     const currentBannerHomeText = (currentBanner.homeText ?? {}) as SettingsObj;
     const currentBannerTypewriter = (currentBannerHomeText.typewriter ??
         {}) as SettingsObj;
-    const currentBannerWaves = (currentBanner.waves ?? {}) as SettingsObj;
-
     const intervalInput = Number(inputVal("ss-banner-carousel-interval") || 0);
     const intervalFallback = Number(currentBannerCarousel.interval ?? 5);
 
     return {
-        ...currentBanner,
+        ...stripBannerImageApi(currentBanner),
         position: inputVal("ss-banner-position") || "center",
         src: bannerDesktopListContainer
             ? collectBannerList(bannerDesktopListContainer)
@@ -314,19 +311,12 @@ function collectBannerPayload(currentBanner: SettingsObj): SettingsObj {
             enable: checked("ss-banner-carousel-enable"),
             interval: intervalInput || intervalFallback,
         },
-        imageApi: {
-            ...currentBannerImageApi,
-            enable: checked("ss-banner-image-api-enable"),
-            url: inputVal("ss-banner-image-api-url"),
-        },
         homeText: collectBannerHomeText(
             currentBannerHomeText,
             currentBannerTypewriter,
         ),
         waves: {
-            ...currentBannerWaves,
             enable: checked("ss-banner-waves-enable"),
-            performanceMode: checked("ss-banner-waves-performance"),
         },
     };
 }

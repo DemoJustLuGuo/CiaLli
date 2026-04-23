@@ -5,9 +5,9 @@ import type {
     EditableSiteSettings,
     SiteSettingsPayload,
     SiteAnnouncementPayload,
-    StoredSiteSettingsPayload,
 } from "@/types/site-settings";
 import type { JsonObject } from "@/types/json";
+import { resolveSiteThemePreset } from "@/config/theme-presets";
 import { canonicalizeSiteTimeZone } from "@/utils/date-utils";
 import {
     createOne,
@@ -26,16 +26,20 @@ import {
     AdminAboutUpdateSchema,
     AdminBulletinPreviewSchema,
     AdminBulletinUpdateSchema,
+    AdminSiteSettingsPatchSchema,
+    type AdminSiteSettingsPatchInput,
 } from "@/server/api/schemas";
 import {
     renderMarkdown,
     type MarkdownRenderMode,
 } from "@/server/markdown/render";
+import { AppError } from "@/server/api/errors";
 import {
     getResolvedSiteSettings,
     invalidateSiteSettingsCache,
     resolveSiteSettingsPayload,
 } from "@/server/site-settings/service";
+import { splitSiteSettingsForStorage } from "@/server/site-settings/storage-sections";
 import { cleanupOwnedOrphanDirectusFiles } from "@/server/api/v1/shared/file-cleanup";
 
 import { requireAdmin } from "@/server/api/v1/shared";
@@ -112,13 +116,6 @@ async function readSiteAnnouncementRowMeta(): Promise<{
     };
 }
 
-function stripAnnouncementFromSiteSettings(
-    settings: SiteSettingsPayload,
-): StoredSiteSettingsPayload {
-    const { announcement: _announcement, ...storedSettings } = settings;
-    return storedSettings;
-}
-
 type NormalizedAnnouncementContent = {
     title: string;
     summary: string;
@@ -165,13 +162,15 @@ function readAnnouncementFromRow(
 async function upsertSiteSettings(
     settings: SiteSettingsPayload,
 ): Promise<{ updatedAt: string | null }> {
-    const storedSettings = stripAnnouncementFromSiteSettings(settings);
+    const storedSections = splitSiteSettingsForStorage(settings);
+    const themePreset = resolveSiteThemePreset(settings.site.themePreset);
     const existing = await readSiteSettingsRowMeta();
     if (!existing) {
         const created = await createOne("app_site_settings", {
             key: "default",
             status: "published",
-            settings: storedSettings,
+            theme_preset: themePreset,
+            ...storedSections,
         });
         return {
             updatedAt: created.date_updated || created.date_created || null,
@@ -181,7 +180,8 @@ async function upsertSiteSettings(
     const updated = await updateOne("app_site_settings", existing.id, {
         key: "default",
         status: "published",
-        settings: storedSettings,
+        theme_preset: themePreset,
+        ...storedSections,
     });
     return {
         updatedAt: updated.date_updated || updated.date_created || null,
@@ -489,6 +489,14 @@ async function handleAdminSitePatch(
     adminUserId: string,
 ): Promise<Response> {
     const body = await parseJsonBody(context.request);
+    if (
+        isObjectRecord(body) &&
+        Object.prototype.hasOwnProperty.call(body, "announcement")
+    ) {
+        // 站点设置 PATCH 支持整包提交，必须主动剔除 announcement 避免回写到 app_site_settings。
+        delete body.announcement;
+    }
+
     try {
         const normalizedTimeZone = validateSiteTimeZonePatch(body);
         if (
@@ -506,15 +514,16 @@ async function handleAdminSitePatch(
         );
     }
 
-    if (
-        isObjectRecord(body) &&
-        Object.prototype.hasOwnProperty.call(body, "announcement")
-    ) {
-        // 站点设置 PATCH 支持整包提交，必须主动剔除 announcement 避免回写到 app_site_settings。
-        delete body.announcement;
+    let patch: AdminSiteSettingsPatchInput;
+    try {
+        patch = validateBody(AdminSiteSettingsPatchSchema, body);
+    } catch (error) {
+        if (error instanceof AppError) {
+            return fail(error.message, error.status, error.code);
+        }
+        throw error;
     }
 
-    const patch = body as Partial<EditableSiteSettings>;
     const current = await getResolvedSiteSettings();
     const settings = resolveSiteSettingsPayload(patch, current.settings);
     const prevFileIds = collectSettingsFileIds(current.settings);
@@ -530,7 +539,7 @@ async function handleAdminSitePatch(
             app_visibility: "public",
         });
     }
-    invalidateSiteSettingsCache();
+    await invalidateSiteSettingsCache();
     await cleanupOwnedOrphanDirectusFiles({
         candidateFileIds: removedFileIds,
     });
@@ -610,7 +619,7 @@ async function handleAdminBulletinPatch(
         ...(input.closable !== undefined ? { closable: input.closable } : {}),
     });
     const { updatedAt } = await upsertSiteAnnouncement(announcementPatch);
-    invalidateSiteSettingsCache();
+    await invalidateSiteSettingsCache();
     return ok({
         announcement: announcementPatch,
         updated_at: updatedAt,

@@ -3,7 +3,7 @@ import Key from "../../../i18nKey";
 export const enAdmin: Record<string, string> = {
     [Key.adminAboutBodyPlaceholder]: "Enter About page content",
     [Key.adminAboutBodyRequired]: "About page content cannot be empty",
-    [Key.adminAboutDescription]: "Edit your site's About page content here.",
+    [Key.adminAboutDescription]: "Update your site's About page.",
     [Key.adminAboutLoadFailed]: "Failed to load About page data",
     [Key.adminAboutLoadFailedRetry]:
         "Failed to load About page data. Please try again",
@@ -18,7 +18,8 @@ export const enAdmin: Record<string, string> = {
     [Key.adminBulletinBodyPlaceholder]: "Enter announcement content",
     [Key.adminBulletinBodyRequired]: "Announcement content cannot be empty",
     [Key.adminBulletinClosable]: "Allow closing announcement",
-    [Key.adminBulletinDescription]: "Manage site announcements here.",
+    [Key.adminBulletinDescription]:
+        "Update the announcement shown on your site.",
     [Key.adminBulletinLoadFailed]: "Failed to load announcement data",
     [Key.adminBulletinLoadFailedRetry]:
         "Failed to load announcement data. Please try again",
@@ -30,8 +31,58 @@ export const enAdmin: Record<string, string> = {
     [Key.adminBulletinTitle]: "Announcement settings",
     [Key.adminBulletinTitleLabel]: "Announcement title",
     [Key.adminBulletinTitlePlaceholder]: "Enter announcement title",
-    [Key.adminDashboardDescription]: "Admin overview",
-    [Key.adminDashboardTitle]: "Admin Console",
+    [Key.adminDashboardAiDescription]:
+        "Review AI features, connection settings, and upcoming automation options.",
+    [Key.adminDashboardAiTitle]: "AI",
+    [Key.adminDashboardDescription]:
+        "Manage content, members, and site-wide settings.",
+    [Key.adminDashboardTitle]: "Site Admin",
+    [Key.adminAiAutomationDescription]:
+        "Automation will help generate summaries, surface trending topics, and support auto-published diary posts.",
+    [Key.adminAiAutomationReadonlyHint]:
+        "Automation tools aren't available yet. For now, this page only outlines what's coming.",
+    [Key.adminAiComingSoon]: "Coming soon",
+    [Key.adminAiConnectionApiBaseUrl]: "API / Base URL",
+    [Key.adminAiConnectionApiKey]: "API key",
+    [Key.adminAiConnectionAssistantAccount]: "AI assistant account",
+    [Key.adminAiConnectionFlowName]: "Directus Flow identifier",
+    [Key.adminAiConnectionModel]: "Model",
+    [Key.adminAiFeatureArticleSummary]: "Article AI summaries",
+    [Key.adminAiFeatureHotspotDigest]:
+        "Recent article and diary hotspot digest with auto diary publishing",
+    [Key.adminAiFeatureReadonlyHint]:
+        "These features are not available yet. You'll manage them here later.",
+    [Key.adminAiOverviewAssistantAccount]: "AI assistant account",
+    [Key.adminAiOverviewAssistantAccountHint]:
+        "A dedicated AI assistant account will be added later for summaries, trend digests, and automated publishing.",
+    [Key.adminAiOverviewFlowStrategy]: "Directus Flow automation",
+    [Key.adminAiOverviewFlowStrategyHint]:
+        "A unified automation entry point will be added later so you can manage AI workflows in one place.",
+    [Key.adminAiPageDescription]:
+        "Review upcoming AI features and settings here. For now, this page is informational only.",
+    [Key.adminAiPageIntro]:
+        "This page previews how site-wide AI features will be managed. Real settings and secret storage are not available yet.",
+    [Key.adminAiPageTitle]: "AI Configuration",
+    [Key.adminAiPlaceholderApiBaseUrl]:
+        "Future field for the AI service endpoint or gateway URL",
+    [Key.adminAiPlaceholderApiKey]: "Future field for the service API key",
+    [Key.adminAiPlaceholderAssistantAccount]:
+        "Future field for the in-site AI assistant account",
+    [Key.adminAiPlaceholderFlowName]:
+        "Future field for the Directus Flow name or ID",
+    [Key.adminAiPlaceholderModel]:
+        "Future field for the model or capability preset",
+    [Key.adminAiSaveSettings]: "Save AI settings",
+    [Key.adminAiClearApiKey]: "Clear API key",
+    [Key.adminAiApiKeyConfigured]: "API key configured",
+    [Key.adminAiApiKeyMissing]: "API key missing",
+    [Key.adminAiSettingsSaved]: "AI settings saved",
+    [Key.adminAiSettingsSaveFailed]:
+        "Failed to save AI settings. Please try again",
+    [Key.adminAiSectionAutomation]: "Automation notes",
+    [Key.adminAiSectionConnection]: "Connection settings",
+    [Key.adminAiSectionFeatures]: "Feature switches",
+    [Key.adminAiSectionOverview]: "AI overview",
     [Key.adminMarkdownBodyLabel]: "Body",
     [Key.adminMarkdownBold]: "Bold",
     [Key.adminMarkdownBoldPlaceholder]: "Enter bold text",
@@ -49,7 +100,7 @@ export const enAdmin: Record<string, string> = {
     [Key.adminMarkdownUnderline]: "Underline",
     [Key.adminMarkdownUnderlinePlaceholder]: "Enter underlined text",
     [Key.adminSiteSettingsDescription]:
-        "Configure global site display and feature toggles.",
+        "Adjust site-wide display details and feature switches.",
     [Key.adminSiteSettingsTitle]: "Site settings",
     [Key.adminUsersActions]: "Actions",
     [Key.adminUsersApprove]: "Approve",
@@ -59,7 +110,8 @@ export const enAdmin: Record<string, string> = {
         "This action permanently deletes the account and related data. Continue?",
     [Key.adminUsersDeleteExpectedText]: "Confirm deletion of {name}",
     [Key.adminUsersDeleted]: "User deleted",
-    [Key.adminUsersDescription]: "Manage users and registration requests.",
+    [Key.adminUsersDescription]:
+        "Review members and handle registration requests.",
     [Key.adminUsersEmailExists]: "Email already exists",
     [Key.adminUsersListTitle]: "User list",
     [Key.adminUsersLoadRegistrationsFailed]:
@@ -112,7 +164,7 @@ export const enAdmin: Record<string, string> = {
     [Key.adminSiteSettingsBannerAlignment]: "Banner alignment",
     [Key.adminSiteSettingsBannerAlignmentBottom]: "Bottom",
     [Key.adminSiteSettingsBannerAlignmentCenter]: "Center",
-    [Key.adminSiteSettingsBannerApiUrl]: "Banner API URL",
+    [Key.adminSiteSettingsBannerCopy]: "Banner copy",
     [Key.adminSiteSettingsBannerAlignmentTop]: "Top",
     [Key.adminSiteSettingsBannerRemovedPendingSave]:
         "Banner removed. Changes take effect after saving",
@@ -132,9 +184,7 @@ export const enAdmin: Record<string, string> = {
     [Key.adminSiteSettingsCropInitFailed]: "Failed to initialize crop",
     [Key.adminSiteSettingsDefaultOption]: "Default",
     [Key.adminSiteSettingsDeleteSpeedMs]: "Delete speed (ms)",
-    [Key.adminSiteSettingsDesktopWallpaper]: "Desktop wallpaper",
     [Key.adminSiteSettingsEnableArticleToc]: "Enable article table of contents",
-    [Key.adminSiteSettingsEnableBannerApi]: "Enable banner API",
     [Key.adminSiteSettingsEnableMusicPlayer]: "Enable music player",
     [Key.adminSiteSettingsEnableTypewriter]: "Enable typewriter effect",
     [Key.adminSiteSettingsEnableWallpaperCarousel]: "Enable wallpaper carousel",
@@ -151,7 +201,6 @@ export const enAdmin: Record<string, string> = {
         "Icon updated. Changes take effect after saving",
     [Key.adminSiteSettingsIconRemovedPendingSave]:
         "Icon removed. Changes take effect after saving",
-    [Key.adminSiteSettingsImageSourceAndCopy]: "Image source and copyright",
     [Key.adminSiteSettingsImageTooLargeWithLimit]:
         "Image is too large (limit {limit})",
     [Key.adminSiteSettingsInvalidInput]: "Invalid input",
@@ -172,9 +221,8 @@ export const enAdmin: Record<string, string> = {
     [Key.adminSiteSettingsNavNamePlaceholder]: "Enter navigation name",
     [Key.adminSiteSettingsNavTextIcon]: "Navigation text icon",
     [Key.adminSiteSettingsNavTitleText]: "Navigation title",
-    [Key.adminSiteSettingsOptimizeWavePerformance]: "Optimize wave performance",
     [Key.adminSiteSettingsPageIntro]:
-        "Configure site display info and feature toggles here.",
+        "Update site-wide display details and feature switches.",
     [Key.adminSiteSettingsPauseTimeMs]: "Pause duration (ms)",
     [Key.adminSiteSettingsPauseTimeMsHint]:
         "How long to pause after each typing cycle.",
@@ -194,7 +242,7 @@ export const enAdmin: Record<string, string> = {
     [Key.adminSiteSettingsSectionOther]: "Other settings",
     [Key.adminSiteSettingsSectionSite]: "Site settings",
     [Key.adminSiteSettingsSelectImageFile]: "Select an image file",
-    [Key.adminSiteSettingsShowBannerCopy]: "Show banner copyright",
+    [Key.adminSiteSettingsShowBannerText]: "Show banner copy",
     [Key.adminSiteSettingsSiteKeywords]: "Site keywords",
     [Key.adminSiteSettingsSiteKeywordsHint]:
         "Use commas to separate multiple keywords for SEO metadata.",
@@ -242,8 +290,6 @@ export const enAdmin: Record<string, string> = {
         "Controls how the banner visual is aligned in its container.",
     [Key.adminSiteSettingsCarouselIntervalSecondsHint]:
         "Interval for desktop wallpaper carousel, in seconds.",
-    [Key.adminSiteSettingsBannerApiUrlHint]:
-        "When banner API is enabled, images are fetched from this URL.",
     [Key.adminSiteSettingsUploadFailedCanceled]:
         "Upload failed or was canceled",
     [Key.adminSiteSettingsUrlOrFileId]: "Enter URL or file ID",

@@ -1,0 +1,8 @@
+{
+	email ops@ciallichannel.com
+}
+
+localhost {
+	encode gzip zstd
+	reverse_proxy web:4321
+}

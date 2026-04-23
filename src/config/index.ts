@@ -3,7 +3,6 @@ import {
     type SiteSettingsPayload,
     type SystemSiteConfig,
 } from "../types/site-settings";
-import { LinkPreset } from "../types/config";
 import {
     DEFAULT_SITE_THEME_PRESET,
     resolveSiteThemePreset,
@@ -56,11 +55,6 @@ export const defaultSiteSettings: SiteSettingsPayload = {
         },
         waves: {
             enable: true,
-            performanceMode: false,
-        },
-        imageApi: {
-            enable: false,
-            url: "http://domain.com/api_v2.php?format=text&count=4",
         },
         homeText: {
             enable: true,
@@ -91,8 +85,16 @@ export const defaultSiteSettings: SiteSettingsPayload = {
     },
     navBar: {
         links: [
-            LinkPreset.Home,
-            LinkPreset.Articles,
+            {
+                name: "首页",
+                url: "/",
+                icon: "material-symbols:home",
+            },
+            {
+                name: "归档",
+                url: "/posts",
+                icon: "material-symbols:archive",
+            },
             {
                 name: "发布",
                 url: "/posts/new",
@@ -104,16 +106,6 @@ export const defaultSiteSettings: SiteSettingsPayload = {
                 icon: "material-symbols:person",
                 children: [
                     {
-                        name: "个人主页",
-                        url: "/__user__",
-                        icon: "material-symbols:account-circle",
-                    },
-                    {
-                        name: "我的 bangumi 收藏",
-                        url: "/__user__/bangumi",
-                        icon: "material-symbols:movie",
-                    },
-                    {
                         name: "日记",
                         url: "/__user__/diary",
                         icon: "material-symbols:book",
@@ -122,6 +114,21 @@ export const defaultSiteSettings: SiteSettingsPayload = {
                         name: "相册",
                         url: "/__user__/albums",
                         icon: "material-symbols:photo-library",
+                    },
+                    {
+                        name: "个人主页",
+                        url: "/__user__",
+                        icon: "material-symbols:account-circle",
+                    },
+                    {
+                        name: "账户设置",
+                        url: "/me",
+                        icon: "material-symbols:settings",
+                    },
+                    {
+                        name: "我的bangumi",
+                        url: "/__user__/bangumi",
+                        icon: "material-symbols:movie",
                     },
                 ],
             },
@@ -167,6 +174,14 @@ export const defaultSiteSettings: SiteSettingsPayload = {
         server: "netease",
         type: "playlist",
         marqueeSpeed: 10,
+    },
+    ai: {
+        enabled: false,
+        articleSummaryEnabled: false,
+        baseUrl: "",
+        model: "",
+        apiKeyEncrypted: null,
+        updatedAt: null,
     },
 };
 

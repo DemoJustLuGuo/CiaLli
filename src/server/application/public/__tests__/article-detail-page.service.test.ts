@@ -11,6 +11,13 @@ function createArticle(overrides: Partial<AppArticle> = {}): AppArticle {
         author_id: "author-1",
         title: "Public article",
         summary: "summary",
+        summary_source: "manual",
+        summary_generated_at: null,
+        summary_model: null,
+        summary_prompt_version: null,
+        summary_content_hash: null,
+        summary_error: null,
+        ai_summary_enabled: false,
         body_markdown: "body",
         cover_file: null,
         cover_url: null,
@@ -52,6 +59,7 @@ describe("article-detail-page.service", () => {
             loadPublicProfileByUserId,
             loadProfileForViewerByUserId,
             renderArticleMarkdown: vi.fn().mockResolvedValue("<p>body</p>"),
+            loadLatestAiSummaryJob: vi.fn().mockResolvedValue(null),
         });
 
         expect(result.authorProfile).toEqual(
@@ -65,5 +73,113 @@ describe("article-detail-page.service", () => {
             articleId: "article-1",
             viewerId: null,
         });
+    });
+
+    it("AI 总结任务处于 pending 时，在无摘要文章上显示骨架占位", async () => {
+        const result = await loadArticleDetailViewData({
+            article: createArticle({
+                summary: null,
+                summary_source: "none",
+                ai_summary_enabled: true,
+            }),
+            mode: "public",
+            sessionUserId: null,
+            loadAuthorBundle: vi.fn().mockResolvedValue(new Map()),
+            loadArticleInteractionSnapshot: vi.fn().mockResolvedValue({
+                likeCount: 0,
+                commentCount: 0,
+                viewerLiked: false,
+            }),
+            loadPublicProfileByUserId: vi.fn().mockResolvedValue(null),
+            loadProfileForViewerByUserId: vi.fn().mockResolvedValue(null),
+            renderArticleMarkdown: vi.fn().mockResolvedValue("<p>body</p>"),
+            loadLatestAiSummaryJob: vi.fn().mockResolvedValue({
+                status: "pending",
+            }),
+        });
+
+        expect(result.aiSummaryJobStatus).toBe("pending");
+        expect(result.showPendingAiSummarySkeleton).toBe(true);
+    });
+
+    it("旧 AI 摘要重新生成时，仍在 SSR 首屏优先展示生成骨架", async () => {
+        const result = await loadArticleDetailViewData({
+            article: createArticle({
+                summary: "旧 AI 摘要",
+                summary_source: "ai",
+                ai_summary_enabled: true,
+            }),
+            mode: "public",
+            sessionUserId: null,
+            loadAuthorBundle: vi.fn().mockResolvedValue(new Map()),
+            loadArticleInteractionSnapshot: vi.fn().mockResolvedValue({
+                likeCount: 0,
+                commentCount: 0,
+                viewerLiked: false,
+            }),
+            loadPublicProfileByUserId: vi.fn().mockResolvedValue(null),
+            loadProfileForViewerByUserId: vi.fn().mockResolvedValue(null),
+            renderArticleMarkdown: vi.fn().mockResolvedValue("<p>body</p>"),
+            loadLatestAiSummaryJob: vi.fn().mockResolvedValue({
+                status: "processing",
+            }),
+        });
+
+        expect(result.aiSummaryJobStatus).toBe("processing");
+        expect(result.showPendingAiSummarySkeleton).toBe(true);
+    });
+
+    it("AI 总结任务进入终态失败时，不在 SSR 首屏继续展示生成中骨架", async () => {
+        const result = await loadArticleDetailViewData({
+            article: createArticle({
+                summary: null,
+                summary_source: "none",
+                ai_summary_enabled: true,
+            }),
+            mode: "public",
+            sessionUserId: null,
+            loadAuthorBundle: vi.fn().mockResolvedValue(new Map()),
+            loadArticleInteractionSnapshot: vi.fn().mockResolvedValue({
+                likeCount: 0,
+                commentCount: 0,
+                viewerLiked: false,
+            }),
+            loadPublicProfileByUserId: vi.fn().mockResolvedValue(null),
+            loadProfileForViewerByUserId: vi.fn().mockResolvedValue(null),
+            renderArticleMarkdown: vi.fn().mockResolvedValue("<p>body</p>"),
+            loadLatestAiSummaryJob: vi.fn().mockResolvedValue({
+                status: "failed",
+            }),
+        });
+
+        expect(result.aiSummaryJobStatus).toBe("failed");
+        expect(result.showPendingAiSummarySkeleton).toBe(false);
+    });
+
+    it("手写摘要存在时，即使 AI 任务 pending 也不会展示生成骨架", async () => {
+        const result = await loadArticleDetailViewData({
+            article: createArticle({
+                summary: "人工摘要",
+                summary_source: "manual",
+                ai_summary_enabled: true,
+            }),
+            mode: "public",
+            sessionUserId: null,
+            loadAuthorBundle: vi.fn().mockResolvedValue(new Map()),
+            loadArticleInteractionSnapshot: vi.fn().mockResolvedValue({
+                likeCount: 0,
+                commentCount: 0,
+                viewerLiked: false,
+            }),
+            loadPublicProfileByUserId: vi.fn().mockResolvedValue(null),
+            loadProfileForViewerByUserId: vi.fn().mockResolvedValue(null),
+            renderArticleMarkdown: vi.fn().mockResolvedValue("<p>body</p>"),
+            loadLatestAiSummaryJob: vi.fn().mockResolvedValue({
+                status: "pending",
+            }),
+        });
+
+        expect(result.aiSummaryJobStatus).toBe("pending");
+        expect(result.showPendingAiSummarySkeleton).toBe(false);
     });
 });

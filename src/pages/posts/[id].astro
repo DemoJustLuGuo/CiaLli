@@ -42,8 +42,10 @@ import {
 } from "@/server/api/v1/public-data";
 import {
   runWithDirectusPublicAccess,
+  runWithDirectusServiceAccess,
   runWithDirectusUserAccess,
 } from "@/server/directus/client";
+import { readLatestArticleSummaryJob } from "@/server/ai-summary/jobs";
 import { getSessionAccessToken, getSessionUser } from "@/server/auth/session";
 import { getResolvedSiteSettings } from "@/server/site-settings/service";
 import type { AppArticle } from "@/types/app";
@@ -65,6 +67,7 @@ let article: {
   title: string;
   slug: string | null;
   summary: string | null;
+  summary_source: "none" | "manual" | "ai";
   body_markdown: string;
   cover_file: string | null;
   cover_url: string | null;
@@ -92,6 +95,15 @@ let ownerPasswordStorageKeys: string[] = [];
 let sessionUserId: string | null = null;
 let articleSupportsPublicInteraction = false;
 let articleCacheScope: "public" | "private" = "public";
+let articleAiSummaryJobStatus:
+  | "pending"
+  | "processing"
+  | "succeeded"
+  | "failed"
+  | "canceled"
+  | "skipped"
+  | null = null;
+let showPendingAiSummarySkeleton = false;
 const resolvedSiteSettings =
   Astro.locals.siteSettings ?? (await getResolvedSiteSettings());
 const siteDateContext = buildSiteDateFormatContext(resolvedSiteSettings);
@@ -159,6 +171,10 @@ if (rawId) {
             await renderMarkdown(bodyMarkdown, {
               target: "page",
             }),
+          loadLatestAiSummaryJob: async (articleId) =>
+            await runWithDirectusServiceAccess(
+              async () => await readLatestArticleSummaryJob(articleId),
+            ),
         });
 
       const viewData =
@@ -183,6 +199,8 @@ if (rawId) {
         rawArticle.author_id === sessionUserId,
       );
       articleSupportsPublicInteraction = viewData.isPubliclyVisible;
+      articleAiSummaryJobStatus = viewData.aiSummaryJobStatus;
+      showPendingAiSummarySkeleton = viewData.showPendingAiSummarySkeleton;
 
       if (viewData.isEncryptedBody) {
         encryptedBody = viewData.encryptedBody;
@@ -283,6 +301,24 @@ const articleSharePayload: SharePosterPayload | undefined =
         hiddenUntilDecrypt: Boolean(encryptedBody),
       }
     : undefined;
+const hasReadyAiSummary = Boolean(
+  article?.summary && article.summary_source === "ai",
+);
+const hasStaticSummaryCard = Boolean(
+  article?.summary &&
+  (article.summary_source === "manual" || article.summary_source === "ai"),
+);
+const shouldRenderAiSummaryCard =
+  showPendingAiSummarySkeleton || hasStaticSummaryCard;
+const articleAiSummaryInitialStatus =
+  articleAiSummaryJobStatus || (hasReadyAiSummary ? "succeeded" : null);
+const articleAiSummaryPollUrl = article
+  ? `/api/v1/public/articles/${encodeURIComponent(article.id)}?bypass_cache=1`
+  : "";
+const summaryCardTitle =
+  article?.summary_source === "ai"
+    ? i18n(I18nKey.interactionArticleAiSummaryTitle)
+    : i18n(I18nKey.interactionArticleSummaryTitle);
 ---
 
 <MainGridLayout
@@ -366,9 +402,6 @@ const articleSharePayload: SharePosterPayload | undefined =
                   </span>
                 )}
               </div>
-              {article.summary && (
-                <p class="text-base text-75">{article.summary}</p>
-              )}
               {article.tags.length > 0 && (
                 <div class="flex flex-wrap gap-2">
                   {article.tags.map((tag) => (
@@ -409,9 +442,125 @@ const articleSharePayload: SharePosterPayload | undefined =
                 ownerPasswordStorageKeys={ownerPasswordStorageKeys}
               />
             ) : (
-              <Markdown class="markdown-content content-serif">
-                <Fragment set:html={articleHtml} />
-              </Markdown>
+              <>
+                {shouldRenderAiSummaryCard && (
+                  <section
+                    class="mb-6"
+                    data-ai-summary-root
+                    data-ai-summary-article-id={article.id}
+                    data-ai-summary-status={articleAiSummaryInitialStatus || ""}
+                    data-ai-summary-poll-url={articleAiSummaryPollUrl}
+                    data-ai-summary-generating-label={i18n(
+                      I18nKey.interactionArticleAiSummaryGenerating,
+                    )}
+                    data-ai-summary-queued-label={i18n(
+                      I18nKey.interactionArticleAiSummaryQueued,
+                    )}
+                    data-ai-summary-failed-label={i18n(
+                      I18nKey.interactionArticleAiSummaryFailed,
+                    )}
+                    data-ai-summary-generating-hint={i18n(
+                      I18nKey.interactionArticleAiSummaryGeneratingHint,
+                    )}
+                    data-ai-summary-queued-hint={i18n(
+                      I18nKey.interactionArticleAiSummaryQueuedHint,
+                    )}
+                    data-ai-summary-failed-hint={i18n(
+                      I18nKey.interactionArticleAiSummaryFailedHint,
+                    )}
+                  >
+                    <aside
+                      class:list={[
+                        "article-ai-summary-card article-ai-summary-card--pending article-ai-summary-card--marquee rounded-2xl p-[1px]",
+                        {
+                          hidden: !showPendingAiSummarySkeleton,
+                        },
+                      ]}
+                      data-ai-summary-skeleton-card
+                    >
+                      <div class="article-ai-summary-panel rounded-[calc(var(--radius-large)-1px)] px-5 py-4">
+                        <div class="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <p class="article-ai-summary-title text-xs font-semibold uppercase tracking-[0.18em] mb-1">
+                              {i18n(I18nKey.interactionArticleAiSummaryTitle)}
+                            </p>
+                            <p
+                              class="article-ai-summary-hint text-sm"
+                              data-ai-summary-hint
+                            >
+                              {articleAiSummaryJobStatus === "processing"
+                                ? i18n(
+                                    I18nKey.interactionArticleAiSummaryGeneratingHint,
+                                  )
+                                : i18n(
+                                    I18nKey.interactionArticleAiSummaryQueuedHint,
+                                  )}
+                            </p>
+                          </div>
+                          <span
+                            class="article-ai-summary-status-pill"
+                            data-ai-summary-pill-label
+                          >
+                            {articleAiSummaryJobStatus === "processing"
+                              ? i18n(
+                                  I18nKey.interactionArticleAiSummaryGenerating,
+                                )
+                              : i18n(I18nKey.interactionArticleAiSummaryQueued)}
+                          </span>
+                        </div>
+                        <div
+                          class="space-y-2.5"
+                          aria-hidden="true"
+                          data-ai-summary-skeleton-lines
+                        >
+                          <div
+                            class="article-ai-summary-skeleton-line"
+                            style="--ai-summary-line-width: 94%;"
+                          />
+                          <div
+                            class="article-ai-summary-skeleton-line"
+                            style="--ai-summary-line-width: 88%;"
+                          />
+                          <div
+                            class="article-ai-summary-skeleton-line"
+                            style="--ai-summary-line-width: 92%;"
+                          />
+                          <div
+                            class="article-ai-summary-skeleton-line"
+                            style="--ai-summary-line-width: 64%;"
+                          />
+                        </div>
+                      </div>
+                    </aside>
+                    <aside
+                      class:list={[
+                        "article-ai-summary-card article-ai-summary-card--ready rounded-2xl p-[1px]",
+                        {
+                          hidden:
+                            !hasStaticSummaryCard ||
+                            showPendingAiSummarySkeleton,
+                        },
+                      ]}
+                      data-ai-summary-final-card
+                    >
+                      <div class="article-ai-summary-panel rounded-[calc(var(--radius-large)-1px)] px-5 py-4">
+                        <p class="article-ai-summary-title text-xs font-semibold uppercase tracking-[0.18em] mb-2">
+                          {summaryCardTitle}
+                        </p>
+                        <p
+                          class="article-ai-summary-body text-base leading-7"
+                          data-ai-summary-final-text
+                        >
+                          {hasStaticSummaryCard ? article?.summary : ""}
+                        </p>
+                      </div>
+                    </aside>
+                  </section>
+                )}
+                <Markdown class="markdown-content content-serif">
+                  <Fragment set:html={articleHtml} />
+                </Markdown>
+              </>
             )}
           </div>
           <div
@@ -497,8 +646,214 @@ const articleSharePayload: SharePosterPayload | undefined =
     )
   }
   {
+    showPendingAiSummarySkeleton && (
+      <script>import "@/scripts/article-detail/ai-summary-card";</script>
+    )
+  }
+  {
     articleSharePayload && (
       <script>import "@/scripts/interactions/article-share-dialog";</script>
     )
   }
 </MainGridLayout>
+
+<style>
+  .article-ai-summary-card {
+    --article-ai-summary-rainbow: conic-gradient(
+      from 0turn,
+      #ff4d6d 0%,
+      #ff9f1c 16%,
+      #ffe66d 32%,
+      #2ec4b6 48%,
+      #3a86ff 64%,
+      #8338ec 80%,
+      #ff4d6d 100%
+    );
+    --article-ai-summary-border: color-mix(
+      in srgb,
+      var(--primary) 58%,
+      var(--line-divider) 42%
+    );
+    --article-ai-summary-surface: color-mix(
+      in srgb,
+      var(--card-bg) 94%,
+      var(--primary) 6%
+    );
+    --article-ai-summary-title-color: rgba(0, 0, 0, 0.6);
+    --article-ai-summary-body-color: rgba(0, 0, 0, 0.88);
+    position: relative;
+    overflow: hidden;
+    background: var(--article-ai-summary-border);
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+  }
+
+  .article-ai-summary-panel {
+    position: relative;
+    z-index: 1;
+    background: var(--article-ai-summary-surface);
+  }
+
+  .article-ai-summary-title {
+    color: var(--article-ai-summary-title-color);
+  }
+
+  .article-ai-summary-hint,
+  .article-ai-summary-body {
+    color: var(--article-ai-summary-body-color);
+  }
+
+  .article-ai-summary-body {
+    white-space: pre-line;
+  }
+
+  .article-ai-summary-skeleton-line {
+    width: var(--ai-summary-line-width, 100%);
+    height: 0.9rem;
+    border-radius: 999px;
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--primary) 18%, var(--card-bg) 82%),
+      color-mix(in srgb, var(--line-divider) 22%, var(--card-bg) 78%)
+    );
+  }
+
+  .article-ai-summary-skeleton-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 58%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, white 36%, var(--primary) 18%),
+      transparent
+    );
+    transform: translateX(-120%);
+    animation: article-ai-summary-shimmer 3.4s ease-in-out infinite;
+  }
+
+  .article-ai-summary-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: 999px;
+    border: 1px solid
+      color-mix(in srgb, var(--primary) 28%, var(--line-divider) 72%);
+    padding: 0.35rem 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--article-ai-summary-title-color);
+    background: color-mix(in srgb, var(--primary) 12%, var(--card-bg) 88%);
+  }
+
+  .article-ai-summary-status-pill::before {
+    content: "";
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: var(--primary);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 32%, transparent);
+    animation: article-ai-summary-pulse 1.8s ease-in-out infinite;
+  }
+
+  .article-ai-summary-card--ready {
+    box-shadow:
+      0 12px 28px rgba(15, 23, 42, 0.08),
+      0 0 0 1px color-mix(in srgb, var(--primary) 16%, transparent);
+  }
+
+  .article-ai-summary-card--marquee:not([data-ai-summary-terminal]) {
+    background: transparent;
+  }
+
+  .article-ai-summary-card--marquee:not([data-ai-summary-terminal])::before {
+    content: "";
+    position: absolute;
+    inset: -80%;
+    background: var(--article-ai-summary-rainbow);
+    animation: article-ai-summary-card-marquee 5.8s linear infinite;
+  }
+
+  .article-ai-summary-card--pending[data-ai-summary-terminal="failed"],
+  .article-ai-summary-card--pending[data-ai-summary-terminal="timeout"] {
+    --article-ai-summary-border: color-mix(
+      in srgb,
+      var(--line-divider) 78%,
+      var(--primary) 22%
+    );
+    --article-ai-summary-surface: color-mix(
+      in srgb,
+      var(--card-bg) 97%,
+      var(--line-divider) 3%
+    );
+  }
+
+  .article-ai-summary-card--pending[data-ai-summary-terminal="failed"]
+    .article-ai-summary-skeleton-line,
+  .article-ai-summary-card--pending[data-ai-summary-terminal="timeout"]
+    .article-ai-summary-skeleton-line {
+    opacity: 0.38;
+  }
+
+  .article-ai-summary-card--pending[data-ai-summary-terminal="failed"]
+    .article-ai-summary-skeleton-line::after,
+  .article-ai-summary-card--pending[data-ai-summary-terminal="timeout"]
+    .article-ai-summary-skeleton-line::after {
+    animation: none;
+  }
+
+  @keyframes article-ai-summary-shimmer {
+    0% {
+      transform: translateX(-120%);
+    }
+    100% {
+      transform: translateX(220%);
+    }
+  }
+
+  @keyframes article-ai-summary-card-marquee {
+    0% {
+      transform: rotate(0turn);
+    }
+    100% {
+      transform: rotate(1turn);
+    }
+  }
+
+  @keyframes article-ai-summary-pulse {
+    0%,
+    100% {
+      transform: scale(0.92);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 18%, transparent);
+    }
+    50% {
+      transform: scale(1);
+      box-shadow: 0 0 0 0.45rem
+        color-mix(in srgb, var(--primary) 0%, transparent);
+    }
+  }
+
+  :global(:root.dark) .article-ai-summary-card {
+    --article-ai-summary-title-color: rgba(255, 255, 255, 0.68);
+    --article-ai-summary-body-color: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.22);
+  }
+
+  :global(:root.dark) .article-ai-summary-card--ready {
+    box-shadow:
+      0 16px 36px rgba(0, 0, 0, 0.22),
+      0 0 0 1px color-mix(in srgb, var(--primary) 24%, transparent);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .article-ai-summary-card--marquee::before,
+    .article-ai-summary-skeleton-line::after,
+    .article-ai-summary-status-pill::before {
+      animation: none;
+    }
+  }
+</style>

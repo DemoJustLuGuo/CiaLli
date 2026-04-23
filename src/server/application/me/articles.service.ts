@@ -18,6 +18,7 @@ import type {
 } from "@/server/api/schemas";
 import { parseJsonBody, parsePagination } from "@/server/api/utils";
 import { validateBody } from "@/server/api/validate";
+import { enqueueAndTriggerArticleSummaryJob } from "@/server/ai-summary/dispatch";
 import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import {
@@ -101,6 +102,58 @@ function resolveArticleAssetVisibility(
     return normalizeArticleStatus(status) === "published" && Boolean(isPublic)
         ? "public"
         : "private";
+}
+
+async function queuePublishedArticleAiSummary(
+    articleId: string,
+): Promise<void> {
+    try {
+        await enqueueAndTriggerArticleSummaryJob({
+            articleId,
+            kind: "on_publish",
+        });
+    } catch (error) {
+        // AI 总结属于发布后的异步增强能力；即使调度失败，也不能反向阻断文章发布。
+        console.error("[me/articles] failed to queue AI summary job", error);
+    }
+}
+
+function applyArticleSummaryFields(
+    payload: JsonObject,
+    input: { summary?: string | null },
+    target?: OwnedArticleRecord,
+): void {
+    if (input.summary === undefined) {
+        return;
+    }
+
+    const nextSummary = input.summary ?? null;
+    payload.summary = nextSummary;
+    const previousSummary = String(target?.summary ?? "");
+    const previousSource = String(target?.summary_source ?? "none");
+
+    if (!String(nextSummary || "").trim()) {
+        payload.summary_source = "none";
+    } else if (
+        previousSource === "ai" &&
+        normalizeComparableArticleSummary(nextSummary) ===
+            normalizeComparableArticleSummary(previousSummary)
+    ) {
+        payload.summary_source = "ai";
+    } else {
+        payload.summary_source = "manual";
+        payload.summary_generated_at = null;
+        payload.summary_model = null;
+        payload.summary_prompt_version = null;
+        payload.summary_content_hash = null;
+        payload.summary_error = null;
+    }
+}
+
+function normalizeComparableArticleSummary(value: unknown): string {
+    return String(value ?? "")
+        .replace(/\r\n?/g, "\n")
+        .trim();
 }
 
 function normalizeRequiredArticleText(value: unknown): string {
@@ -271,6 +324,8 @@ async function handleArticlesCreate(
         title: input.title,
         slug: specialSlug,
         summary: input.summary ?? null,
+        summary_source: input.summary ? ("manual" as const) : ("none" as const),
+        ai_summary_enabled: input.ai_summary_enabled ?? false,
         body_markdown: input.body_markdown,
         cover_file: input.cover_file ?? null,
         cover_url: input.cover_url ?? null,
@@ -314,6 +369,7 @@ async function handleArticlesCreate(
         ],
         { label: "me/articles#create" },
     );
+    void queuePublishedArticleAiSummary(created.id);
     return ok({ item: { ...created, tags: safeCsv(created?.tags) } });
 }
 
@@ -321,6 +377,7 @@ function applyArticleBaseFields(
     payload: JsonObject,
     input: UpdateArticleInput,
     body: JsonObject,
+    target?: OwnedArticleRecord,
 ): string | null {
     let nextCoverFile: string | null = null;
 
@@ -330,11 +387,12 @@ function applyArticleBaseFields(
     if (input.slug !== undefined) {
         payload.slug = toSpecialArticleSlug(input.slug);
     }
-    if (input.summary !== undefined) {
-        payload.summary = input.summary;
-    }
+    applyArticleSummaryFields(payload, input, target);
     if (input.body_markdown !== undefined) {
         payload.body_markdown = input.body_markdown;
+    }
+    if (input.ai_summary_enabled !== undefined) {
+        payload.ai_summary_enabled = input.ai_summary_enabled;
     }
     if (hasOwn(body, "cover_file")) {
         nextCoverFile = normalizeDirectusFileId(input.cover_file);
@@ -382,7 +440,7 @@ function buildArticlePatchPayload(
     const prevCoverFile = normalizeDirectusFileId(target.cover_file);
     const payload: JsonObject = {};
 
-    const newCoverFile = applyArticleBaseFields(payload, input, body);
+    const newCoverFile = applyArticleBaseFields(payload, input, body, target);
     const nextCoverFile = newCoverFile ?? prevCoverFile;
     const currentStatus = normalizeArticleStatus(target.status);
     const nextStatus =
@@ -581,6 +639,8 @@ function buildWorkingDraftCreatePayload(
         author_id: access.user.id,
         title: input.title ?? "",
         summary: input.summary ?? null,
+        summary_source: input.summary ? ("manual" as const) : ("none" as const),
+        ai_summary_enabled: input.ai_summary_enabled ?? false,
         body_markdown: input.body_markdown ?? "",
         cover_file: input.cover_file ?? null,
         cover_url: input.cover_url ?? null,
@@ -602,6 +662,7 @@ function buildWorkingDraftUpdatePayload(
         payload,
         input as UpdateArticleInput,
         body,
+        target,
     );
     const nextCoverFile = newCoverFile ?? prevCoverFile;
     payload.status = "draft";
@@ -766,6 +827,9 @@ async function handleArticlePatch(
         ],
         { label: "me/articles#patch" },
     );
+    if (nextStatus === "published") {
+        void queuePublishedArticleAiSummary(updated.id);
+    }
     return ok({ item: { ...updated, tags: safeCsv(updated.tags) } });
 }
 

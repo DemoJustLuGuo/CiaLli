@@ -17,9 +17,9 @@ import {
     isRecord,
     isSiteLanguageOption,
     normalizeAnnouncement,
+    normalizeAiSettings,
     normalizeBannerBasic,
     normalizeBannerHomeText,
-    normalizeBannerImageApi,
     normalizeBannerNavbar,
     normalizeMusicPlayer,
     normalizeNavBarLinks,
@@ -30,6 +30,10 @@ import {
     normalizeToc,
     readRawBannerSrc,
 } from "./normalize-helpers";
+import {
+    composeSiteSettingsFromStorageSections,
+    type StoredSiteSettingsSectionSources,
+} from "./storage-sections";
 
 type SiteSettingsCacheValue = {
     resolved: ResolvedSiteSettings;
@@ -40,6 +44,16 @@ type SiteSettingsFailureFallback = {
     expiresAt: number;
     resolved: ResolvedSiteSettings;
 };
+
+const LEGACY_SETTINGS_TOP_LEVEL_KEYS = [
+    "analytics",
+    "featurePages",
+    "footer",
+    "license",
+    "sakura",
+    "sidebarLayout",
+    "umami",
+] as const;
 
 const SITE_SETTINGS_FAILURE_BACKOFF_MS = 5_000;
 const ANNOUNCEMENT_QUERY_FIELDS = [
@@ -97,18 +111,6 @@ function mergeWithDefaults<T>(defaults: T, patch: unknown): T {
         default:
             return defaults;
     }
-}
-
-function stripAnnouncementFromSiteSettingsRaw(raw: unknown): unknown {
-    if (!isRecord(raw)) {
-        return raw;
-    }
-    const sanitized: Record<string, unknown> = { ...raw };
-    if (Object.prototype.hasOwnProperty.call(sanitized, "announcement")) {
-        // 公告已拆分到独立集合，读取站点设置时必须丢弃历史 announcement 脏字段。
-        delete sanitized.announcement;
-    }
-    return sanitized;
 }
 
 function normalizeAnnouncementPayload(
@@ -181,6 +183,7 @@ function normalizeSettings(
     }
 
     normalizeSiteInfo(merged, base);
+    merged.site.themePreset = resolveSiteThemePreset(merged.site.themePreset);
     normalizeSiteFavicon(merged);
     merged.auth.register_enabled = Boolean(
         merged.auth.register_enabled ?? base.auth.register_enabled,
@@ -189,7 +192,6 @@ function normalizeSettings(
     merged.wallpaperMode.defaultMode =
         merged.wallpaperMode.defaultMode === "none" ? "none" : "banner";
     normalizeBannerBasic(merged, base, rawBannerSrc);
-    normalizeBannerImageApi(merged, base);
     normalizeBannerHomeText(merged, base);
     normalizeBannerNavbar(merged, base);
     normalizeToc(merged);
@@ -197,6 +199,7 @@ function normalizeSettings(
     normalizeProfile(merged, base);
     normalizeAnnouncement(merged);
     normalizeMusicPlayer(merged);
+    normalizeAiSettings(merged, base);
     const mergedRecord = merged as Record<string, unknown>;
     if (Object.prototype.hasOwnProperty.call(mergedRecord, "sakura")) {
         // 樱花特效已废弃：读取与保存时都主动收敛，避免历史配置继续透传。
@@ -234,6 +237,28 @@ function buildDefaultResolvedSettings(): ResolvedSiteSettings {
     };
 }
 
+function hasLegacySiteSettingsFields(settings: SiteSettingsPayload): boolean {
+    const settingsRecord = settings as Record<string, unknown>;
+    if (
+        LEGACY_SETTINGS_TOP_LEVEL_KEYS.some((key) =>
+            Object.prototype.hasOwnProperty.call(settingsRecord, key),
+        )
+    ) {
+        return true;
+    }
+
+    const bannerRecord = settings.banner as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(bannerRecord, "imageApi")) {
+        return true;
+    }
+
+    const wavesRecord = (settings.banner.waves ?? {}) as Record<
+        string,
+        unknown
+    >;
+    return Object.prototype.hasOwnProperty.call(wavesRecord, "performanceMode");
+}
+
 function readRecentFailureFallback(): ResolvedSiteSettings | null {
     if (!recentFailureFallback) {
         return null;
@@ -253,7 +278,8 @@ function writeRecentFailureFallback(resolved: ResolvedSiteSettings): void {
 }
 
 async function readSiteSettingsRow(): Promise<{
-    settings: unknown;
+    sections: StoredSiteSettingsSectionSources;
+    themePreset: unknown;
     updatedAt: string | null;
 } | null> {
     const rows = await withServiceRepositoryContext(
@@ -267,7 +293,17 @@ async function readSiteSettingsRow(): Promise<{
                 },
                 limit: 1,
                 sort: ["-date_updated", "-date_created"],
-                fields: ["id", "settings", "date_updated", "date_created"],
+                fields: [
+                    "id",
+                    "settings_site",
+                    "settings_nav",
+                    "settings_home",
+                    "settings_article",
+                    "settings_other",
+                    "theme_preset",
+                    "date_updated",
+                    "date_created",
+                ],
             }),
     );
     const row = rows[0];
@@ -275,7 +311,14 @@ async function readSiteSettingsRow(): Promise<{
         return null;
     }
     return {
-        settings: row.settings,
+        sections: {
+            settings_site: row.settings_site,
+            settings_nav: row.settings_nav,
+            settings_home: row.settings_home,
+            settings_article: row.settings_article,
+            settings_other: row.settings_other,
+        },
+        themePreset: row.theme_preset,
         updatedAt: row.date_updated || row.date_created || null,
     };
 }
@@ -400,10 +443,13 @@ const loadResolvedSiteSettingsSingleFlight = createSingleFlightRunner(
 
             const settings = siteRow
                 ? normalizeSettings(
-                      stripAnnouncementFromSiteSettingsRaw(siteRow.settings),
+                      composeSiteSettingsFromStorageSections(siteRow.sections),
                       defaultSiteSettings,
                   )
                 : cloneSettings(defaultSiteSettings);
+            settings.site.themePreset = resolveSiteThemePreset(
+                siteRow?.themePreset,
+            );
             settings.announcement =
                 announcementRow?.announcement ||
                 normalizeAnnouncementPayload(
@@ -454,6 +500,18 @@ export async function getResolvedSiteSettings(): Promise<ResolvedSiteSettings> {
     return await loadResolvedSiteSettingsSingleFlight();
 }
 
+export async function resolveRequestSiteSettings(
+    initial: ResolvedSiteSettings | null | undefined,
+): Promise<ResolvedSiteSettings> {
+    if (initial && !hasLegacySiteSettingsFields(initial.settings)) {
+        return initial;
+    }
+
+    // 开发态热更新下，Astro.locals.siteSettings 可能短暂保留旧 schema。
+    // 发现 legacy 字段时直接回源当前规范化后的设置，避免页面 SSR 与 API 返回不一致。
+    return await getResolvedSiteSettings();
+}
+
 export async function getPublicSiteSettings(): Promise<{
     settings: PublicSiteSettings;
     updatedAt: string | null;
@@ -469,9 +527,6 @@ export async function getPublicSiteSettings(): Promise<{
     };
 }
 
-export function invalidateSiteSettingsCache(): void {
-    void Promise.all([
-        cacheManager.invalidate("site-settings", "default"),
-        cacheManager.invalidateByDomain("banner-images"),
-    ]);
+export async function invalidateSiteSettingsCache(): Promise<void> {
+    await cacheManager.invalidate("site-settings", "default");
 }

@@ -7,11 +7,11 @@ type MockRedisClient = {
     incr: ReturnType<typeof vi.fn>;
 };
 
-const getUpstashRedisClientMock = vi.fn();
-const originalRedisNamespace = process.env.REDIS_NAMESPACE;
+const getRedisClientMock = vi.fn();
+const originalNodeEnv = process.env.NODE_ENV;
 
-vi.mock("@/server/upstash/redis", () => ({
-    getUpstashRedisClient: getUpstashRedisClientMock,
+vi.mock("@/server/redis/client", () => ({
+    getRedisClient: getRedisClientMock,
 }));
 
 function createRedisClientMock(): MockRedisClient {
@@ -26,15 +26,15 @@ function createRedisClientMock(): MockRedisClient {
 beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
-    getUpstashRedisClientMock.mockReset();
-    process.env.REDIS_NAMESPACE = "test-cache";
+    getRedisClientMock.mockReset();
+    process.env.NODE_ENV = "development";
 });
 
 afterEach(() => {
-    if (originalRedisNamespace === undefined) {
-        delete process.env.REDIS_NAMESPACE;
+    if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
     } else {
-        process.env.REDIS_NAMESPACE = originalRedisNamespace;
+        process.env.NODE_ENV = originalNodeEnv;
     }
 });
 
@@ -44,7 +44,7 @@ describe("cache/manager", () => {
         redis.get
             .mockResolvedValueOnce("0")
             .mockResolvedValueOnce(JSON.stringify({ title: "hello" }));
-        getUpstashRedisClientMock.mockReturnValue(redis);
+        getRedisClientMock.mockReturnValue(redis);
 
         const { cacheManager } = await import("@/server/cache/manager");
 
@@ -61,12 +61,12 @@ describe("cache/manager", () => {
         expect(second).toEqual({ title: "hello" });
         expect(redis.get).toHaveBeenCalledTimes(2);
         expect(redis.get.mock.calls[0]?.[0]).toBe(
-            "cialli:test-cache:cache:v1:article-list:__ver__",
+            "cialli:dev:local:cache:v1:article-list:__ver__",
         );
         expect(redis.get.mock.calls[1]?.[0]).toBe(
-            "cialli:test-cache:cache:v1:article-list:v0:article-1",
+            "cialli:dev:local:cache:v1:article-list:v0:article-1",
         );
-        expect(getUpstashRedisClientMock).toHaveBeenCalledWith({
+        expect(getRedisClientMock).toHaveBeenCalledWith({
             automaticDeserialization: false,
         });
     });
@@ -75,7 +75,7 @@ describe("cache/manager", () => {
         const redis = createRedisClientMock();
         redis.get.mockRejectedValue(new Error("redis unavailable"));
         redis.set.mockResolvedValue("OK");
-        getUpstashRedisClientMock.mockReturnValue(redis);
+        getRedisClientMock.mockReturnValue(redis);
 
         const { cacheManager } = await import("@/server/cache/manager");
 
@@ -84,7 +84,7 @@ describe("cache/manager", () => {
         });
 
         expect(redis.set).toHaveBeenCalledWith(
-            "cialli:test-cache:cache:v1:article-list:v0:list-key",
+            "cialli:dev:local:cache:v1:article-list:v0:list-key",
             JSON.stringify({ items: [1, 2, 3] }),
             { ex: 900 },
         );
@@ -93,14 +93,14 @@ describe("cache/manager", () => {
     it("整域失效时只递增当前 mixed-feed 域版本号", async () => {
         const redis = createRedisClientMock();
         redis.incr.mockResolvedValue(1);
-        getUpstashRedisClientMock.mockReturnValue(redis);
+        getRedisClientMock.mockReturnValue(redis);
 
         const { cacheManager } = await import("@/server/cache/manager");
 
         await cacheManager.invalidateByDomain("mixed-feed");
 
         expect(redis.incr.mock.calls.map(([key]) => key)).toEqual([
-            "cialli:test-cache:cache:v1:mixed-feed:__ver__",
+            "cialli:dev:local:cache:v1:mixed-feed:__ver__",
         ]);
     });
 
@@ -108,7 +108,7 @@ describe("cache/manager", () => {
         const redis = createRedisClientMock();
         redis.incr.mockRejectedValue(new Error("incr failed"));
         redis.set.mockResolvedValue("OK");
-        getUpstashRedisClientMock.mockReturnValue(redis);
+        getRedisClientMock.mockReturnValue(redis);
 
         const { cacheManager } = await import("@/server/cache/manager");
 
@@ -116,28 +116,9 @@ describe("cache/manager", () => {
         await cacheManager.set("article-list", "list-key", { ok: true });
 
         expect(redis.set).toHaveBeenCalledWith(
-            "cialli:test-cache:cache:v1:article-list:v1:list-key",
+            "cialli:dev:local:cache:v1:article-list:v1:list-key",
             JSON.stringify({ ok: true }),
             { ex: 900 },
-        );
-    });
-
-    it("banner-images 域按小时级 TTL 写入 Redis", async () => {
-        const redis = createRedisClientMock();
-        redis.get.mockResolvedValue("0");
-        redis.set.mockResolvedValue("OK");
-        getUpstashRedisClientMock.mockReturnValue(redis);
-
-        const { cacheManager } = await import("@/server/cache/manager");
-
-        await cacheManager.set("banner-images", "default", [
-            "https://example.com/a.jpg",
-        ]);
-
-        expect(redis.set).toHaveBeenCalledWith(
-            "cialli:test-cache:cache:v1:banner-images:v0:default",
-            JSON.stringify(["https://example.com/a.jpg"]),
-            { ex: 3600 },
         );
     });
 });

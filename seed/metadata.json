@@ -1,0 +1,30 @@
+{
+  "generatedAt": "2026-04-22T16:53:36.241Z",
+  "source": "local-docker-compose",
+  "postgres": {
+    "service": "postgres",
+    "database": "directus",
+    "dumpFile": "seed/postgres/demo.dump",
+    "dumpBytes": 329793
+  },
+  "minio": {
+    "service": "minio",
+    "bucket": "cialli-assets",
+    "objectRoot": "seed/minio/demo-bucket",
+    "objectCount": 0
+  },
+  "directus": {
+    "schemaFile": "directus/schema/app-schema.json",
+    "seedContract": {
+      "installerCreatesAdmin": true,
+      "legacyDemoAdminEmailRemoved": "demo-admin@example.com",
+      "staticTokensCleared": true,
+      "sessionsCleared": true
+    }
+  },
+  "restorePolicy": {
+    "postgres": "仅在空库或未完成业务初始化时恢复，不覆盖现有数据。",
+    "minio": "仅在目标 bucket 为空时恢复，不覆盖现有对象。"
+  },
+  "rebuiltFromCurrentDocker": true
+}

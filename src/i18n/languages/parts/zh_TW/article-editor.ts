@@ -26,6 +26,9 @@ export const zhTWArticleEditor: Record<string, string> = {
     [Key.articleEditorEncryptedEditMessage]:
         "需要先在文章裡輸入密碼解鎖後，才能進入編輯。",
     [Key.articleEditorEncryptedEditGoUnlock]: "前往解鎖",
+    [Key.articleEditorAiSummaryEnabled]: "AI 摘要",
+    [Key.articleEditorAiSummaryEnabledHint]:
+        "開啟後將使用 AI 非同步生成摘要，手寫摘要會被清空並停用。",
     [Key.articleEditorGeneratingEncryptedContent]: "正在產生加密內容...",
     [Key.articleEditorLoadFailed]: "載入失敗",
     [Key.articleEditorLoadFailedRetry]: "載入失敗，請重試",

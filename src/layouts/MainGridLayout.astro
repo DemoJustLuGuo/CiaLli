@@ -15,7 +15,7 @@ import ImageWrapper from "../components/misc/ImageWrapper.astro";
 import TypewriterText from "../components/TypewriterText.astro";
 import TOC from "../components/widget/TOC.astro";
 import { buildRuntimeSiteConfig } from "@/config";
-import { getResolvedSiteSettings } from "@/server/site-settings/service";
+import { resolveRequestSiteSettings } from "@/server/site-settings/service";
 import { BANNER_HEIGHT_EXTEND } from "../constants/constants";
 import Layout from "@layouts/Layout.astro";
 import {
@@ -41,8 +41,9 @@ interface Props {
   pageKind?: string;
 }
 
-const resolvedSiteSettings =
-  Astro.locals.siteSettings ?? (await getResolvedSiteSettings());
+const resolvedSiteSettings = await resolveRequestSiteSettings(
+  Astro.locals.siteSettings,
+);
 const runtimeSiteConfig = buildRuntimeSiteConfig(
   resolvedSiteSettings.system,
   resolvedSiteSettings.settings,
@@ -297,7 +298,7 @@ const shouldRelocateRightSidebarContent =
           <div
             class="waves absolute -bottom-px h-[15vh] max-h-[9.375rem] min-h-[3.125rem] w-full"
             id="header-waves"
-            style="transform: translateZ(0); will-change: fill;"
+            style="transform: translateZ(0); will-change: transform;"
           >
             <svg
               class="waves"

@@ -1,8 +1,8 @@
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import node from "@astrojs/node";
 import sitemap from "@astrojs/sitemap";
 import svelte, { vitePreprocess } from "@astrojs/svelte";
-import vercel from "@astrojs/vercel";
 import { pluginCollapsibleSections } from "@expressive-code/plugin-collapsible-sections";
 import { pluginLineNumbers } from "@expressive-code/plugin-line-numbers";
 
@@ -32,22 +32,18 @@ export default defineConfig({
     },
 
     security: {
+        // Astro's built-in form-origin middleware compares Origin with
+        // Astro.url.origin before our BFF guard can account for reverse-proxy
+        // headers. Keep the project-level same-origin + CSRF + rate-limit guard
+        // as the write boundary so multipart uploads work behind Docker Caddy.
+        checkOrigin: false,
         allowedDomains: [{ hostname: _siteHostname }],
     },
 
     // server 模式只改变默认渲染策略；静态例外继续由显式 prerender 控制。
     output: "server",
-    adapter: vercel({
-        // 启用 Vercel Image Optimization
-        imageService: true,
-        imagesConfig: {
-            sizes: [
-                48, 72, 96, 128, 160, 192, 256, 320, 400, 480, 640, 720, 800,
-                960, 1200, 1536, 1920, 2560,
-            ],
-            formats: ["image/avif", "image/webp"],
-            minimumCacheTTL: 60 * 60 * 24 * 30,
-        },
+    adapter: node({
+        mode: "standalone",
     }),
 
     prefetch: {

@@ -19,6 +19,7 @@ import {
     rateLimitResponse,
 } from "@/server/security/rate-limit";
 import { assertCsrfToken, rotateCsrfCookie } from "@/server/security/csrf";
+import { assertSameOrigin } from "@/server/security/origin";
 import { AppError } from "@/server/api/errors";
 import type { JsonObject, JsonValue } from "@/types/json";
 import { getJsonString, isJsonObject } from "@utils/json-utils";
@@ -26,9 +27,14 @@ import { getJsonString, isJsonObject } from "@utils/json-utils";
 const AUTH_NO_STORE = "private, no-store";
 
 function resolveTrustedClientIp(headers: Headers): string {
-    const vercelForwarded = headers.get("x-vercel-forwarded-for");
-    if (vercelForwarded) {
-        return vercelForwarded.split(",")[0]?.trim() || "unknown";
+    const forwardedFor = headers.get("x-forwarded-for");
+    if (forwardedFor) {
+        return forwardedFor.split(",")[0]?.trim() || "unknown";
+    }
+
+    const realIp = headers.get("x-real-ip");
+    if (realIp) {
+        return realIp.trim();
     }
 
     const cloudflare = headers.get("cf-connecting-ip");
@@ -36,9 +42,9 @@ function resolveTrustedClientIp(headers: Headers): string {
         return cloudflare.trim();
     }
 
-    const realIp = headers.get("x-real-ip");
-    if (realIp) {
-        return realIp.trim();
+    const vercelForwarded = headers.get("x-vercel-forwarded-for");
+    if (vercelForwarded) {
+        return vercelForwarded.split(",")[0]?.trim() || "unknown";
     }
 
     return "unknown";
@@ -210,14 +216,11 @@ async function executeLogin(
 }
 
 export async function POST(context: APIContext): Promise<Response> {
-    const { request, url } = context;
+    const { request } = context;
 
-    const origin = request.headers.get("origin");
-    if (origin && origin !== url.origin) {
-        return json(
-            { ok: false, message: i18n(I18nKey.interactionApiIllegalOrigin) },
-            { status: 403 },
-        );
+    const sameOriginDenied = assertSameOrigin(context);
+    if (sameOriginDenied) {
+        return sameOriginDenied;
     }
 
     const csrfDenied = assertCsrfToken(context);

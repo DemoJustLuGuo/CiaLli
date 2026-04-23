@@ -3,8 +3,7 @@ import Key from "../../../i18nKey";
 export const jaAdmin: Record<string, string> = {
     [Key.adminAboutBodyPlaceholder]: "About ページ本文を入力してください",
     [Key.adminAboutBodyRequired]: "About ページ本文は必須です",
-    [Key.adminAboutDescription]:
-        "ここでサイトの「About」ページ内容を編集します。",
+    [Key.adminAboutDescription]: "サイトの「About」ページを更新します。",
     [Key.adminAboutLoadFailed]: "About ページデータの読み込みに失敗しました",
     [Key.adminAboutLoadFailedRetry]:
         "About ページデータの読み込みに失敗しました。再試行してください",
@@ -19,7 +18,7 @@ export const jaAdmin: Record<string, string> = {
     [Key.adminBulletinBodyPlaceholder]: "お知らせ本文を入力してください",
     [Key.adminBulletinBodyRequired]: "お知らせ本文は必須です",
     [Key.adminBulletinClosable]: "お知らせを閉じられるようにする",
-    [Key.adminBulletinDescription]: "ここでサイトのお知らせを管理します。",
+    [Key.adminBulletinDescription]: "サイトに表示するお知らせを更新します。",
     [Key.adminBulletinLoadFailed]: "お知らせデータの読み込みに失敗しました",
     [Key.adminBulletinLoadFailedRetry]:
         "お知らせデータの読み込みに失敗しました。再試行してください",
@@ -31,8 +30,58 @@ export const jaAdmin: Record<string, string> = {
     [Key.adminBulletinTitle]: "お知らせ設定",
     [Key.adminBulletinTitleLabel]: "お知らせタイトル",
     [Key.adminBulletinTitlePlaceholder]: "お知らせタイトルを入力してください",
-    [Key.adminDashboardDescription]: "管理画面の概要",
-    [Key.adminDashboardTitle]: "管理コンソール",
+    [Key.adminDashboardAiDescription]:
+        "AI 機能、接続設定、今後の自動化オプションを確認できます。",
+    [Key.adminDashboardAiTitle]: "AI",
+    [Key.adminDashboardDescription]:
+        "コンテンツ、メンバー、サイト全体の設定を管理します。",
+    [Key.adminDashboardTitle]: "サイト管理",
+    [Key.adminAiAutomationDescription]:
+        "自動化では、要約の生成、話題の整理、日記の自動公開に対応していく予定です。",
+    [Key.adminAiAutomationReadonlyHint]:
+        "自動化機能はまだ利用できません。現在は案内のみ表示しています。",
+    [Key.adminAiComingSoon]: "近日公開",
+    [Key.adminAiConnectionApiBaseUrl]: "API / Base URL",
+    [Key.adminAiConnectionApiKey]: "API キー",
+    [Key.adminAiConnectionAssistantAccount]: "AI アシスタントアカウント",
+    [Key.adminAiConnectionFlowName]: "Directus Flow 識別子",
+    [Key.adminAiConnectionModel]: "モデル",
+    [Key.adminAiFeatureArticleSummary]: "記事 AI 要約",
+    [Key.adminAiFeatureHotspotDigest]:
+        "最近の記事・日記のホットトピック要約と日記の自動公開",
+    [Key.adminAiFeatureReadonlyHint]:
+        "これらの機能はまだ利用できません。今後ここでまとめて管理できるようになります。",
+    [Key.adminAiOverviewAssistantAccount]: "AI アシスタントアカウント",
+    [Key.adminAiOverviewAssistantAccountHint]:
+        "今後は専用の AI アシスタントアカウントを追加し、要約や話題整理、自動公開をまとめて扱えるようにします。",
+    [Key.adminAiOverviewFlowStrategy]: "Directus Flow 自動化",
+    [Key.adminAiOverviewFlowStrategyHint]:
+        "今後は AI 機能をまとめて管理できる自動化入口を用意します。",
+    [Key.adminAiPageDescription]:
+        "サイト全体の AI 機能と設定予定を確認できます。現在は案内のみです。",
+    [Key.adminAiPageIntro]:
+        "このページでは、サイト全体で使う AI 機能の予定と入口を確認できます。実際の設定や秘密情報の保存はまだ利用できません。",
+    [Key.adminAiPageTitle]: "AI 総合設定",
+    [Key.adminAiPlaceholderApiBaseUrl]:
+        "将来的に AI サービスのエンドポイントやゲートウェイ URL を入力します",
+    [Key.adminAiPlaceholderApiKey]: "将来的にサービスの API キーを入力します",
+    [Key.adminAiPlaceholderAssistantAccount]:
+        "将来的にサイト内 AI アシスタントアカウントを紐付けます",
+    [Key.adminAiPlaceholderFlowName]:
+        "将来的に Directus Flow 名または ID を設定します",
+    [Key.adminAiPlaceholderModel]:
+        "将来的にモデルまたは機能プリセットを選択します",
+    [Key.adminAiSaveSettings]: "AI 設定を保存",
+    [Key.adminAiClearApiKey]: "API キーを削除",
+    [Key.adminAiApiKeyConfigured]: "API キー設定済み",
+    [Key.adminAiApiKeyMissing]: "API キー未設定",
+    [Key.adminAiSettingsSaved]: "AI 設定を保存しました",
+    [Key.adminAiSettingsSaveFailed]:
+        "AI 設定の保存に失敗しました。もう一度お試しください",
+    [Key.adminAiSectionAutomation]: "自動化メモ",
+    [Key.adminAiSectionConnection]: "接続設定",
+    [Key.adminAiSectionFeatures]: "機能スイッチ",
+    [Key.adminAiSectionOverview]: "AI 概要",
     [Key.adminMarkdownBodyLabel]: "本文",
     [Key.adminMarkdownBold]: "太字",
     [Key.adminMarkdownBoldPlaceholder]: "太字の内容を入力してください",
@@ -51,7 +100,7 @@ export const jaAdmin: Record<string, string> = {
     [Key.adminMarkdownUnderline]: "下線",
     [Key.adminMarkdownUnderlinePlaceholder]: "下線の内容を入力してください",
     [Key.adminSiteSettingsDescription]:
-        "サイト全体の表示と機能スイッチを設定します。",
+        "サイト全体の表示内容と機能スイッチを調整します。",
     [Key.adminSiteSettingsTitle]: "サイト設定",
     [Key.adminUsersActions]: "操作",
     [Key.adminUsersApprove]: "承認",
@@ -61,7 +110,8 @@ export const jaAdmin: Record<string, string> = {
         "この操作はアカウントと関連データを完全に削除します。続行しますか？",
     [Key.adminUsersDeleteExpectedText]: "{name} の削除を確認",
     [Key.adminUsersDeleted]: "ユーザーを削除しました",
-    [Key.adminUsersDescription]: "ユーザーと登録申請を管理します。",
+    [Key.adminUsersDescription]:
+        "メンバー情報の確認と登録申請の対応を行います。",
     [Key.adminUsersEmailExists]: "メールアドレスは既に存在します",
     [Key.adminUsersListTitle]: "ユーザー一覧",
     [Key.adminUsersLoadRegistrationsFailed]: "登録申請の読み込みに失敗しました",
@@ -111,7 +161,7 @@ export const jaAdmin: Record<string, string> = {
     [Key.adminSiteSettingsBannerAlignment]: "バナー配置",
     [Key.adminSiteSettingsBannerAlignmentBottom]: "下寄せ",
     [Key.adminSiteSettingsBannerAlignmentCenter]: "中央",
-    [Key.adminSiteSettingsBannerApiUrl]: "バナー API URL",
+    [Key.adminSiteSettingsBannerCopy]: "バナーコピー",
     [Key.adminSiteSettingsBannerAlignmentTop]: "上寄せ",
     [Key.adminSiteSettingsBannerRemovedPendingSave]:
         "バナーを削除しました。保存後に反映されます",
@@ -129,9 +179,7 @@ export const jaAdmin: Record<string, string> = {
     [Key.adminSiteSettingsCropInitFailed]: "切り抜きの初期化に失敗しました",
     [Key.adminSiteSettingsDefaultOption]: "デフォルト",
     [Key.adminSiteSettingsDeleteSpeedMs]: "削除速度（ms）",
-    [Key.adminSiteSettingsDesktopWallpaper]: "デスクトップ壁紙",
     [Key.adminSiteSettingsEnableArticleToc]: "記事目次を有効化",
-    [Key.adminSiteSettingsEnableBannerApi]: "バナー API を有効化",
     [Key.adminSiteSettingsEnableMusicPlayer]: "音楽プレーヤーを有効化",
     [Key.adminSiteSettingsEnableTypewriter]: "タイプライター効果を有効化",
     [Key.adminSiteSettingsEnableWallpaperCarousel]: "壁紙カルーセルを有効化",
@@ -149,7 +197,6 @@ export const jaAdmin: Record<string, string> = {
         "アイコンを更新しました。保存後に反映されます",
     [Key.adminSiteSettingsIconRemovedPendingSave]:
         "アイコンを削除しました。保存後に反映されます",
-    [Key.adminSiteSettingsImageSourceAndCopy]: "画像出典と著作権",
     [Key.adminSiteSettingsImageTooLargeWithLimit]:
         "画像サイズが大きすぎます（上限 {limit}）",
     [Key.adminSiteSettingsInvalidInput]: "入力が無効です",
@@ -169,9 +216,8 @@ export const jaAdmin: Record<string, string> = {
     [Key.adminSiteSettingsNavNamePlaceholder]: "ナビ名を入力してください",
     [Key.adminSiteSettingsNavTextIcon]: "ナビテキストアイコン",
     [Key.adminSiteSettingsNavTitleText]: "ナビタイトル",
-    [Key.adminSiteSettingsOptimizeWavePerformance]: "波エフェクト性能を最適化",
     [Key.adminSiteSettingsPageIntro]:
-        "ここでサイト表示情報と機能スイッチを設定できます。",
+        "ここでサイト全体の表示内容と機能スイッチを調整できます。",
     [Key.adminSiteSettingsPauseTimeMs]: "停止時間（ms）",
     [Key.adminSiteSettingsPauseTimeMsHint]:
         "各タイピングサイクル完了後の待機時間です。",
@@ -191,7 +237,7 @@ export const jaAdmin: Record<string, string> = {
     [Key.adminSiteSettingsSectionOther]: "その他設定",
     [Key.adminSiteSettingsSectionSite]: "サイト設定",
     [Key.adminSiteSettingsSelectImageFile]: "画像ファイルを選択してください",
-    [Key.adminSiteSettingsShowBannerCopy]: "バナー著作権を表示",
+    [Key.adminSiteSettingsShowBannerText]: "バナーコピーを表示",
     [Key.adminSiteSettingsSiteKeywords]: "サイトキーワード",
     [Key.adminSiteSettingsSiteKeywordsHint]:
         "複数キーワードはカンマ区切りで入力し、SEO メタ情報に使用します。",
@@ -239,8 +285,6 @@ export const jaAdmin: Record<string, string> = {
         "バナー画像のコンテナ内での配置を制御します。",
     [Key.adminSiteSettingsCarouselIntervalSecondsHint]:
         "デスクトップ壁紙カルーセルの間隔（秒）です。",
-    [Key.adminSiteSettingsBannerApiUrlHint]:
-        "バナー API 有効時、この URL から画像を取得します。",
     [Key.adminSiteSettingsUploadFailedCanceled]:
         "アップロードに失敗したか、キャンセルされました",
     [Key.adminSiteSettingsUrlOrFileId]: "URL またはファイル ID を入力",
