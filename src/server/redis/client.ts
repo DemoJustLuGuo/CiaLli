@@ -4,17 +4,14 @@ export type AppRedisConfig = {
     url: string;
 };
 
-export type AppRedisClientOptions = {
-    /**
-     * 保留旧调用点的兼容参数。
-     * node-redis 默认返回字符串，不再区分 raw/default 两类客户端。
-     */
-    automaticDeserialization?: boolean;
-};
-
 export type AppRedisSetOptions = {
     ex?: number;
     nx?: boolean;
+};
+
+export type AppRedisFixedWindowResult = {
+    current: number;
+    ttlSeconds: number;
 };
 
 export type AppRedisClient = {
@@ -25,9 +22,14 @@ export type AppRedisClient = {
         options?: AppRedisSetOptions,
     ) => Promise<string | null>;
     del: (key: string) => Promise<number>;
+    delIfValue: (key: string, value: string) => Promise<boolean>;
     incr: (key: string) => Promise<number>;
     expire: (key: string, seconds: number) => Promise<number>;
     ttl: (key: string) => Promise<number>;
+    incrementFixedWindow: (
+        key: string,
+        windowSeconds: number,
+    ) => Promise<AppRedisFixedWindowResult>;
 };
 
 type RedisConnection = ReturnType<typeof createClient>;
@@ -121,6 +123,41 @@ function normalizeSetOptions(options?: AppRedisSetOptions): {
     return normalized;
 }
 
+const FIXED_WINDOW_INCREMENT_SCRIPT = `
+local current = redis.call("INCR", KEYS[1])
+local ttl = redis.call("TTL", KEYS[1])
+
+if current == 1 or ttl < 0 then
+    redis.call("EXPIRE", KEYS[1], ARGV[1])
+    ttl = tonumber(ARGV[1])
+end
+
+return { current, ttl }
+`;
+
+const DELETE_IF_VALUE_MATCHES_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+
+return 0
+`;
+
+function parseRedisInteger(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.trunc(value);
+    }
+
+    if (typeof value === "string" && value.trim()) {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+
+    return null;
+}
+
 const wrappedClient: AppRedisClient = {
     async get<T extends string = string>(key: string): Promise<T | null> {
         const client = await getConnectedRedisClient();
@@ -147,6 +184,21 @@ const wrappedClient: AppRedisClient = {
         }
         return await client.del(key);
     },
+    async delIfValue(key: string, value: string): Promise<boolean> {
+        const client = await getConnectedRedisClient();
+        if (!client) {
+            return false;
+        }
+
+        const result = await client.sendCommand([
+            "EVAL",
+            DELETE_IF_VALUE_MATCHES_SCRIPT,
+            "1",
+            key,
+            value,
+        ]);
+        return parseRedisInteger(result) === 1;
+    },
     async incr(key: string): Promise<number> {
         const client = await getConnectedRedisClient();
         if (!client) {
@@ -168,11 +220,37 @@ const wrappedClient: AppRedisClient = {
         }
         return await client.ttl(key);
     },
+    async incrementFixedWindow(
+        key: string,
+        windowSeconds: number,
+    ): Promise<AppRedisFixedWindowResult> {
+        const client = await getConnectedRedisClient();
+        if (!client) {
+            return { current: 0, ttlSeconds: -2 };
+        }
+
+        const normalizedWindowSeconds = Math.max(1, Math.floor(windowSeconds));
+        const result = await client.sendCommand([
+            "EVAL",
+            FIXED_WINDOW_INCREMENT_SCRIPT,
+            "1",
+            key,
+            String(normalizedWindowSeconds),
+        ]);
+
+        const [currentRaw, ttlRaw] = Array.isArray(result) ? result : [];
+        const current = parseRedisInteger(currentRaw);
+        const ttlSeconds = parseRedisInteger(ttlRaw);
+
+        if (current === null || ttlSeconds === null) {
+            return { current: 0, ttlSeconds: -2 };
+        }
+
+        return { current, ttlSeconds };
+    },
 };
 
-export function getRedisClient(
-    _options?: AppRedisClientOptions,
-): AppRedisClient | null {
+export function getRedisClient(): AppRedisClient | null {
     if (!getRedisConfig()) {
         return null;
     }

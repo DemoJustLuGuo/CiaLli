@@ -31,6 +31,23 @@ describe("install cli args", () => {
         expect(args.interactive).toBe(false);
     });
 
+    it("ignores pnpm's standalone argument separator", () => {
+        const args = parseInstallArgs([
+            "install",
+            "--",
+            "--lang",
+            "zh_CN",
+            "--site-url",
+            "https://example.com",
+            "--reset",
+        ]);
+
+        expect(args.lang).toBe("zh_CN");
+        expect(args.siteUrl).toBe("https://example.com");
+        expect(args.reset).toBe(true);
+        expect(args.interactive).toBe(false);
+    });
+
     it("stays interactive when language or site url is missing", () => {
         expect(
             parseInstallArgs(["install", "--site-url", "https://example.com"])
@@ -63,7 +80,8 @@ describe("installer env rendering", () => {
                 directusAdminEmail: "admin@example.com",
                 directusAdminPassword: "admin-password",
                 directusSecret: "directus-secret",
-                directusStaticToken: "directus-static-token",
+                directusWebStaticToken: "directus-web-static-token",
+                directusWorkerStaticToken: "directus-worker-static-token",
                 postgresUser: "dbu_deadbeef",
                 postgresDb: "directus",
                 postgresPassword: "postgres-password",
@@ -71,13 +89,16 @@ describe("installer env rendering", () => {
                 minioRootPassword: "minio-root-password",
                 storageS3Key: "s3_deadbeef",
                 storageS3Secret: "storage-s3-secret",
-                bangumiTokenEncryptionKey: "bangumi-key",
+                appSecretEncryptionKey: "app-secret-key",
                 aiSummaryInternalSecret: "ai-secret",
             }),
         );
 
         expect(envText).toContain(
-            "DIRECTUS_STATIC_TOKEN=directus-static-token",
+            "DIRECTUS_WEB_STATIC_TOKEN=directus-web-static-token",
+        );
+        expect(envText).toContain(
+            "DIRECTUS_WORKER_STATIC_TOKEN=directus-worker-static-token",
         );
         expect(envText).toContain("POSTGRES_USER=dbu_deadbeef");
         expect(envText).toContain("POSTGRES_DB=directus");
@@ -85,6 +106,7 @@ describe("installer env rendering", () => {
         expect(envText).toContain("DIRECTUS_ADMIN_EMAIL=admin@example.com");
         expect(envText).toContain("DIRECTUS_ADMIN_PASSWORD=admin-password");
         expect(envText).toContain("STORAGE_S3_KEY=s3_deadbeef");
+        expect(envText).toContain("APP_SECRET_ENCRYPTION_KEY=app-secret-key");
     });
 
     it("generates required installer secrets and account values", () => {
@@ -100,10 +122,17 @@ describe("installer env rendering", () => {
             Buffer.alloc(24, 7).toString("base64url"),
         );
         expect(secrets.STORAGE_S3_KEY).toBe("s3_07070707");
-        expect(secrets.BANGUMI_TOKEN_ENCRYPTION_KEY).toBe(
+        expect(secrets.APP_SECRET_ENCRYPTION_KEY).toBe(
             Buffer.alloc(32, 7).toString("base64"),
         );
-        expect(secrets.DIRECTUS_STATIC_TOKEN).toHaveLength(48);
+        expect(secrets.DIRECTUS_WEB_SERVICE_EMAIL).toBe(
+            "svc-web-07070707@example.com",
+        );
+        expect(secrets.DIRECTUS_WORKER_SERVICE_EMAIL).toBe(
+            "svc-worker-07070707@example.com",
+        );
+        expect(secrets.DIRECTUS_WEB_STATIC_TOKEN).toHaveLength(48);
+        expect(secrets.DIRECTUS_WORKER_STATIC_TOKEN).toHaveLength(48);
     });
 });
 

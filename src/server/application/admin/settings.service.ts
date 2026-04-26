@@ -9,12 +9,7 @@ import type {
 import type { JsonObject } from "@/types/json";
 import { resolveSiteThemePreset } from "@/config/theme-presets";
 import { canonicalizeSiteTimeZone } from "@/utils/date-utils";
-import {
-    createOne,
-    readMany,
-    updateDirectusFileMetadata,
-    updateOne,
-} from "@/server/directus/client";
+import { createOne, readMany, updateOne } from "@/server/directus/client";
 import { fail, ok } from "@/server/api/response";
 import { withUserRepositoryContext } from "@/server/repositories/directus/scope";
 import { parseJsonBody } from "@/server/api/utils";
@@ -40,9 +35,11 @@ import {
     resolveSiteSettingsPayload,
 } from "@/server/site-settings/service";
 import { splitSiteSettingsForStorage } from "@/server/site-settings/storage-sections";
-import { cleanupOwnedOrphanDirectusFiles } from "@/server/api/v1/shared/file-cleanup";
 
-import { requireAdmin } from "@/server/api/v1/shared";
+import { requireAdmin } from "@/server/api/v1/shared/auth";
+import { extractDirectusFileIdsFromUnknown } from "@/server/api/v1/shared/file-cleanup";
+import { syncMarkdownFileLifecycle } from "@/server/api/v1/me/_helpers";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
 
 const ABOUT_ARTICLE_SLUG = "about";
 const ABOUT_FALLBACK_TITLE = "关于我们";
@@ -254,56 +251,12 @@ async function readSiteAnnouncement(): Promise<{
     };
 }
 
-const DIRECTUS_FILE_ID_PATTERN =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function extractDirectusFileIdFromAssetValue(value: unknown): string | null {
-    if (typeof value !== "string") {
-        return null;
-    }
-    const raw = value.trim();
-    if (!raw) {
-        return null;
-    }
-    if (DIRECTUS_FILE_ID_PATTERN.test(raw)) {
-        return raw;
-    }
-    try {
-        const parsed = new URL(raw, "http://localhost");
-        const path = parsed.pathname;
-        const directPattern = /^\/api\/v1\/public\/assets\/([^/?#]+)\/?$/;
-        const assetPattern = /^\/assets\/([^/?#]+)\/?$/;
-        const matched =
-            path.match(directPattern)?.[1] ||
-            path.match(assetPattern)?.[1] ||
-            "";
-        if (!matched) {
-            return null;
-        }
-        const decoded = decodeURIComponent(matched).trim();
-        return DIRECTUS_FILE_ID_PATTERN.test(decoded) ? decoded : null;
-    } catch {
-        return null;
-    }
-}
-
-function collectBannerAssetValues(value: unknown): string[] {
-    if (typeof value === "string") {
-        return [value];
-    }
-    if (Array.isArray(value)) {
-        return value
-            .map((entry) => (typeof entry === "string" ? entry : ""))
-            .filter(Boolean);
-    }
-    return [];
-}
-
 function collectSettingsFileIds(settings: SiteSettingsPayload): Set<string> {
     const ids = new Set<string>();
     const collectSingleAsset = (value: unknown): void => {
-        const fileId = extractDirectusFileIdFromAssetValue(value);
-        if (fileId) {
+        for (const fileId of extractDirectusFileIdsFromUnknown(value, {
+            includeBareUuid: true,
+        })) {
             ids.add(fileId);
         }
     };
@@ -311,9 +264,7 @@ function collectSettingsFileIds(settings: SiteSettingsPayload): Set<string> {
     for (const item of settings.site.favicon || []) {
         collectSingleAsset(item.src);
     }
-    for (const source of collectBannerAssetValues(settings.banner.src)) {
-        collectSingleAsset(source);
-    }
+    collectSingleAsset(settings.banner.src);
     collectSingleAsset(settings.navbarTitle.icon);
     collectSingleAsset(settings.navbarTitle.logo);
     collectSingleAsset(settings.profile.avatar);
@@ -526,23 +477,22 @@ async function handleAdminSitePatch(
 
     const current = await getResolvedSiteSettings();
     const settings = resolveSiteSettingsPayload(patch, current.settings);
-    const prevFileIds = collectSettingsFileIds(current.settings);
     const nextFileIds = collectSettingsFileIds(settings);
-    const removedFileIds = [...prevFileIds].filter(
-        (fileId) => !nextFileIds.has(fileId),
-    );
     const { updatedAt } = await upsertSiteSettings(settings);
-    for (const fileId of nextFileIds) {
-        await updateDirectusFileMetadata(fileId, {
-            uploaded_by: adminUserId,
-            app_owner_user_id: adminUserId,
-            app_visibility: "public",
-        });
-    }
-    await invalidateSiteSettingsCache();
-    await cleanupOwnedOrphanDirectusFiles({
-        candidateFileIds: removedFileIds,
+    await resourceLifecycle.syncOwnerReferences({
+        ownerCollection: "app_site_settings",
+        ownerId: "default",
+        ownerUserId: adminUserId,
+        visibility: "public",
+        references: [
+            {
+                ownerField: "settings",
+                referenceKind: "settings_asset",
+                fileIds: [...nextFileIds],
+            },
+        ],
     });
+    await invalidateSiteSettingsCache();
     return ok({
         settings,
         updated_at: updatedAt,
@@ -605,6 +555,7 @@ async function handleAdminBulletinPatch(
     const body = await parseJsonBody(context.request);
     const input = validateBody(AdminBulletinUpdateSchema, body);
     const current = await getResolvedSiteSettings();
+    const previousAnnouncement = await readSiteAnnouncement();
     const announcementPatch = readAnnouncementFromRow({
         ...current.settings.announcement,
         ...(input.title !== undefined
@@ -619,6 +570,20 @@ async function handleAdminBulletinPatch(
         ...(input.closable !== undefined ? { closable: input.closable } : {}),
     });
     const { updatedAt } = await upsertSiteAnnouncement(announcementPatch);
+    await syncMarkdownFileLifecycle({
+        previousMarkdown:
+            previousAnnouncement?.announcement.body_markdown ??
+            current.settings.announcement.body_markdown,
+        nextMarkdown: announcementPatch.body_markdown,
+        userId: null,
+        visibility: "public",
+        reference: {
+            ownerCollection: "app_site_announcements",
+            ownerId: "default",
+            ownerField: "body_markdown",
+            referenceKind: "markdown_asset",
+        },
+    });
     await invalidateSiteSettingsCache();
     return ok({
         announcement: announcementPatch,
@@ -681,10 +646,23 @@ async function handleAdminAboutPatch(
 ): Promise<Response> {
     const body = await parseJsonBody(context.request);
     const input = validateBody(AdminAboutUpdateSchema, body);
+    const previousAbout = await readAboutArticleRow();
     const about = await upsertAboutArticle(adminUserId, {
         title: input.title,
         summary: input.summary,
         body_markdown: input.body_markdown,
+    });
+    await syncMarkdownFileLifecycle({
+        previousMarkdown: previousAbout?.body_markdown ?? "",
+        nextMarkdown: about.body_markdown,
+        userId: adminUserId,
+        visibility: "public",
+        reference: {
+            ownerCollection: "app_articles",
+            ownerId: about.id,
+            ownerField: "body_markdown",
+            referenceKind: "markdown_asset",
+        },
     });
     await awaitCacheInvalidations(
         [

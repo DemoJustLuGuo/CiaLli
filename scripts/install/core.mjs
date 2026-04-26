@@ -19,9 +19,88 @@ import {
     isPortAvailable,
     REQUIRED_HOST_PORTS,
 } from "./host.mjs";
+import { resolvePublicBaseUrl } from "../../src/config/public-base-url.mjs";
 
 const execFileAsync = promisify(execFile);
 const DIRECTUS_HEALTH_PATH = "/server/health";
+const DIRECTUS_WEB_SERVICE_POLICY_NAME = "CiaLli Web Service";
+const DIRECTUS_WORKER_SERVICE_POLICY_NAME = "CiaLli Worker Service";
+
+const WEB_SERVICE_PERMISSION_SPECS = [
+    ...[
+        "app_user_profiles",
+        "app_ai_summary_jobs",
+        "app_file_detach_jobs",
+        "app_file_references",
+        "app_articles",
+        "app_article_comments",
+        "app_article_comment_likes",
+        "app_article_likes",
+        "app_diaries",
+        "app_diary_images",
+        "app_diary_comments",
+        "app_diary_comment_likes",
+        "app_diary_likes",
+        "app_albums",
+        "app_album_photos",
+        "app_friends",
+        "app_user_registration_requests",
+        "app_site_settings",
+        "app_site_announcements",
+    ].flatMap((collection) => [
+        { collection, actions: ["read", "create", "update", "delete"] },
+    ]),
+    {
+        collection: "directus_users",
+        actions: ["read", "create", "update", "delete"],
+    },
+    {
+        collection: "directus_files",
+        actions: ["read", "create", "update", "delete"],
+    },
+    {
+        collection: "directus_comments",
+        actions: ["read", "update", "delete"],
+    },
+    {
+        collection: "directus_notifications",
+        actions: ["read", "update", "delete"],
+    },
+    {
+        collection: "directus_versions",
+        actions: ["read", "update", "delete"],
+    },
+    { collection: "directus_roles", actions: ["read"] },
+    { collection: "directus_policies", actions: ["read"] },
+    { collection: "directus_access", actions: ["read"] },
+];
+
+const WORKER_SERVICE_PERMISSION_SPECS = [
+    { collection: "app_ai_summary_jobs", actions: ["read", "update"] },
+    {
+        collection: "app_file_detach_jobs",
+        actions: ["read", "create", "update"],
+    },
+    {
+        collection: "app_file_references",
+        actions: ["read", "create", "update", "delete"],
+    },
+    { collection: "app_articles", actions: ["read", "update"] },
+    { collection: "app_article_comments", actions: ["read"] },
+    { collection: "app_diaries", actions: ["read"] },
+    { collection: "app_diary_comments", actions: ["read"] },
+    { collection: "app_albums", actions: ["read"] },
+    { collection: "app_album_photos", actions: ["read"] },
+    { collection: "app_diary_images", actions: ["read"] },
+    { collection: "app_user_profiles", actions: ["read"] },
+    { collection: "app_anime_entries", actions: ["read"] },
+    { collection: "app_friends", actions: ["read"] },
+    { collection: "app_user_registration_requests", actions: ["read"] },
+    { collection: "app_site_settings", actions: ["read"] },
+    { collection: "app_site_announcements", actions: ["read"] },
+    { collection: "directus_users", actions: ["read"] },
+    { collection: "directus_files", actions: ["read", "update", "delete"] },
+];
 
 /**
  * @typedef {ReturnType<typeof createInstallerI18n>} InstallTranslator
@@ -173,7 +252,8 @@ export async function runInstallFlow(args, deps) {
         appPublicBaseUrl: installInput.siteUrl,
         directusUrl,
         publicAssetBaseUrl: "",
-        directusStaticToken: "",
+        directusWebStaticToken: "",
+        directusWorkerStaticToken: "",
         directusAdminEmail: generatedSecrets.DIRECTUS_ADMIN_EMAIL,
         directusAdminPassword: generatedSecrets.DIRECTUS_ADMIN_PASSWORD,
         directusSecret: generatedSecrets.DIRECTUS_SECRET,
@@ -184,8 +264,7 @@ export async function runInstallFlow(args, deps) {
         minioRootPassword: generatedSecrets.MINIO_ROOT_PASSWORD,
         storageS3Key: generatedSecrets.STORAGE_S3_KEY,
         storageS3Secret: generatedSecrets.STORAGE_S3_SECRET,
-        bangumiTokenEncryptionKey:
-            generatedSecrets.BANGUMI_TOKEN_ENCRYPTION_KEY,
+        appSecretEncryptionKey: generatedSecrets.APP_SECRET_ENCRYPTION_KEY,
         aiSummaryInternalSecret: generatedSecrets.AI_SUMMARY_INTERNAL_SECRET,
     });
 
@@ -222,25 +301,10 @@ export async function runInstallFlow(args, deps) {
     await runCompose(projectRoot, envFilePath, ["up", "-d", "directus"], deps);
     await waitForHttpOk(`${directusUrl}${DIRECTUS_HEALTH_PATH}`, deps, t);
 
-    deps.log(t("createRole"));
-    await runComposeExec(
-        projectRoot,
-        envFilePath,
-        [
-            "directus",
-            "npx",
-            "directus",
-            "roles",
-            "create",
-            "--role",
-            INSTALL_DIRECTUS_ADMIN_ROLE,
-            "--admin",
-            "--app",
-        ],
-        deps,
-    );
+    deps.log(t("applySchema"));
+    await applyDirectusSchema(projectRoot, envFilePath, deps);
 
-    const adminRoleId = (
+    let adminRoleId = (
         await runComposeExec(
             projectRoot,
             envFilePath,
@@ -261,30 +325,109 @@ export async function runInstallFlow(args, deps) {
         .at(-1)
         ?.trim();
     if (!adminRoleId) {
+        deps.log(t("createRole"));
+        await runComposeExec(
+            projectRoot,
+            envFilePath,
+            [
+                "directus",
+                "npx",
+                "directus",
+                "roles",
+                "create",
+                "--role",
+                INSTALL_DIRECTUS_ADMIN_ROLE,
+                "--admin",
+                "--app",
+            ],
+            deps,
+        );
+        adminRoleId = (
+            await runComposeExec(
+                projectRoot,
+                envFilePath,
+                [
+                    "postgres",
+                    "sh",
+                    "-lc",
+                    [
+                        'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c',
+                        `"select id from directus_roles where name = '${INSTALL_DIRECTUS_ADMIN_ROLE.replace(/'/g, "''")}' limit 1"`,
+                    ].join(" "),
+                ],
+                deps,
+            )
+        )
+            .trim()
+            .split("\n")
+            .at(-1)
+            ?.trim();
+    }
+    if (!adminRoleId) {
         throw new Error(t("roleIdMissing"));
     }
 
-    deps.log(t("createAdminUser"));
-    await runComposeExec(
-        projectRoot,
-        envFilePath,
-        [
-            "directus",
-            "npx",
-            "directus",
-            "users",
-            "create",
-            "--email",
-            envValues.DIRECTUS_ADMIN_EMAIL,
-            "--password",
-            envValues.DIRECTUS_ADMIN_PASSWORD,
-            "--role",
-            adminRoleId,
-        ],
-        deps,
-    );
+    const existingAdminUserId = (
+        await runComposeExec(
+            projectRoot,
+            envFilePath,
+            [
+                "postgres",
+                "sh",
+                "-lc",
+                [
+                    'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c',
+                    `"select id from directus_users where lower(email) = lower('${envValues.DIRECTUS_ADMIN_EMAIL.replace(/'/g, "''")}') limit 1"`,
+                ].join(" "),
+            ],
+            deps,
+        )
+    )
+        .trim()
+        .split("\n")
+        .at(-1)
+        ?.trim();
 
-    deps.log(t("generateStaticToken"));
+    if (existingAdminUserId) {
+        deps.log(t("resetAdminPassword"));
+        await runComposeExec(
+            projectRoot,
+            envFilePath,
+            [
+                "directus",
+                "npx",
+                "directus",
+                "users",
+                "passwd",
+                "--email",
+                envValues.DIRECTUS_ADMIN_EMAIL,
+                "--password",
+                envValues.DIRECTUS_ADMIN_PASSWORD,
+            ],
+            deps,
+        );
+    } else {
+        deps.log(t("createAdminUser"));
+        await runComposeExec(
+            projectRoot,
+            envFilePath,
+            [
+                "directus",
+                "npx",
+                "directus",
+                "users",
+                "create",
+                "--email",
+                envValues.DIRECTUS_ADMIN_EMAIL,
+                "--password",
+                envValues.DIRECTUS_ADMIN_PASSWORD,
+                "--role",
+                adminRoleId,
+            ],
+            deps,
+        );
+    }
+
     const loginResponse = await deps.fetch(`${directusUrl}/auth/login`, {
         method: "POST",
         headers: {
@@ -310,46 +453,83 @@ export async function runInstallFlow(args, deps) {
         throw new Error(t("directusAccessTokenMissing"));
     }
 
-    const meResponse = await deps.fetch(`${directusUrl}/users/me?fields=id`, {
-        headers: {
-            authorization: `Bearer ${accessToken}`,
-        },
-    });
-    if (!meResponse.ok) {
-        throw new Error(
-            t("directusReadAdminFailed", {
-                status: meResponse.status,
-            }),
-        );
-    }
-    const mePayload = await meResponse.json();
-    const adminUserId = String(mePayload?.data?.id || "").trim();
-    if (!adminUserId) {
-        throw new Error(t("directusAdminUserIdMissing"));
-    }
-
-    const tokenResponse = await deps.fetch(
-        `${directusUrl}/users/${adminUserId}`,
-        {
-            method: "PATCH",
-            headers: {
-                authorization: `Bearer ${accessToken}`,
-                "content-type": "application/json",
+    if (existingAdminUserId) {
+        const ensureAdminRoleResponse = await deps.fetch(
+            `${directusUrl}/users/${existingAdminUserId}`,
+            {
+                method: "PATCH",
+                headers: {
+                    authorization: `Bearer ${accessToken}`,
+                    "content-type": "application/json",
+                },
+                body: JSON.stringify({
+                    role: adminRoleId,
+                    status: "active",
+                }),
             },
-            body: JSON.stringify({
-                token: generatedSecrets.DIRECTUS_STATIC_TOKEN,
-            }),
-        },
-    );
-    if (!tokenResponse.ok) {
-        throw new Error(
-            t("directusStaticTokenPersistFailed", {
-                status: tokenResponse.status,
-            }),
         );
+        if (!ensureAdminRoleResponse.ok) {
+            throw new Error(
+                t("directusStaticTokenPersistFailed", {
+                    status: ensureAdminRoleResponse.status,
+                }),
+            );
+        }
     }
 
-    envValues.DIRECTUS_STATIC_TOKEN = generatedSecrets.DIRECTUS_STATIC_TOKEN;
+    deps.log(t("repairAccessPolicies"));
+    await repairDirectusAccessPolicies({
+        directusUrl,
+        accessToken,
+        deps,
+        t,
+    });
+
+    deps.log(t("generateStaticToken"));
+    const webPolicyId = await createDirectusPolicy({
+        accessToken,
+        deps,
+        directusUrl,
+        name: DIRECTUS_WEB_SERVICE_POLICY_NAME,
+        permissionSpecs: WEB_SERVICE_PERMISSION_SPECS,
+        t,
+    });
+    const workerPolicyId = await createDirectusPolicy({
+        accessToken,
+        deps,
+        directusUrl,
+        name: DIRECTUS_WORKER_SERVICE_POLICY_NAME,
+        permissionSpecs: WORKER_SERVICE_PERMISSION_SPECS,
+        t,
+    });
+
+    await createDirectusServiceUser({
+        accessToken,
+        deps,
+        directusUrl,
+        email: generatedSecrets.DIRECTUS_WEB_SERVICE_EMAIL,
+        password: generatedSecrets.DIRECTUS_WEB_SERVICE_PASSWORD,
+        policyId: webPolicyId,
+        staticToken: generatedSecrets.DIRECTUS_WEB_STATIC_TOKEN,
+        t,
+        userName: "CiaLli Web Service",
+    });
+    await createDirectusServiceUser({
+        accessToken,
+        deps,
+        directusUrl,
+        email: generatedSecrets.DIRECTUS_WORKER_SERVICE_EMAIL,
+        password: generatedSecrets.DIRECTUS_WORKER_SERVICE_PASSWORD,
+        policyId: workerPolicyId,
+        staticToken: generatedSecrets.DIRECTUS_WORKER_STATIC_TOKEN,
+        t,
+        userName: "CiaLli Worker Service",
+    });
+
+    envValues.DIRECTUS_WEB_STATIC_TOKEN =
+        generatedSecrets.DIRECTUS_WEB_STATIC_TOKEN;
+    envValues.DIRECTUS_WORKER_STATIC_TOKEN =
+        generatedSecrets.DIRECTUS_WORKER_STATIC_TOKEN;
     await deps.writeFile(envFilePath, renderEnvFile(envValues));
 
     deps.log(t("updateSiteLanguage"));
@@ -454,9 +634,17 @@ async function resolveInstallInput(args, deps, t) {
         throw new Error(t("siteUrlRequired"));
     }
 
-    let parsedSiteUrl;
     try {
-        parsedSiteUrl = new URL(siteUrl);
+        const resolved = resolvePublicBaseUrl({
+            APP_PUBLIC_BASE_URL: siteUrl,
+        });
+        const publicUrl = new URL(resolved.origin);
+        if (publicUrl.protocol === "https:" && isLocalBrowserHost(publicUrl)) {
+            publicUrl.protocol = "http:";
+        }
+        return {
+            siteUrl: publicUrl.origin,
+        };
     } catch {
         throw new Error(
             t("unsupportedSiteUrl", {
@@ -464,10 +652,21 @@ async function resolveInstallInput(args, deps, t) {
             }),
         );
     }
+}
 
-    return {
-        siteUrl: parsedSiteUrl.toString().replace(/\/$/, ""),
-    };
+/**
+ * @param {URL} url
+ * @returns {boolean}
+ */
+function isLocalBrowserHost(url) {
+    const hostname = url.hostname.toLowerCase();
+    if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+        return true;
+    }
+    if (hostname === "::1" || hostname === "[::1]") {
+        return true;
+    }
+    return /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
 /**
@@ -694,6 +893,151 @@ async function upsertSiteLanguage(params) {
 /**
  * @param {string} projectRoot
  * @param {string} envFilePath
+ * @param {InstallerDeps} deps
+ */
+async function applyDirectusSchema(projectRoot, envFilePath, deps) {
+    const schemaFilePath = path.join(
+        projectRoot,
+        "directus",
+        "schema",
+        "app-schema.json",
+    );
+    await runCompose(
+        projectRoot,
+        envFilePath,
+        ["cp", schemaFilePath, "directus:/tmp/cialli-app-schema.json"],
+        deps,
+    );
+    await runComposeExec(
+        projectRoot,
+        envFilePath,
+        [
+            "directus",
+            "npx",
+            "directus",
+            "schema",
+            "apply",
+            "/tmp/cialli-app-schema.json",
+            "--yes",
+        ],
+        deps,
+    );
+}
+
+/**
+ * @param {unknown} payload
+ * @returns {Array<Record<string, unknown>>}
+ */
+function readDirectusDataArray(payload) {
+    if (payload && typeof payload === "object" && Array.isArray(payload.data)) {
+        return payload.data;
+    }
+    return [];
+}
+
+/**
+ * @param {Record<string, unknown>} permission
+ * @param {string} policyName
+ * @returns {boolean}
+ */
+function isPermissionForPolicyName(permission, policyName) {
+    const policy = permission.policy;
+    if (!policy || typeof policy !== "object") {
+        return false;
+    }
+    return String(policy.name || "").trim() === policyName;
+}
+
+/**
+ * @param {{
+ *   directusUrl: string;
+ *   accessToken: string;
+ *   collection: string;
+ *   action: string;
+ *   policyName: string;
+ *   permissions: Record<string, unknown>;
+ *   deps: InstallerDeps;
+ *   t: InstallTranslator;
+ * }} params
+ */
+async function patchPermissionByPolicyName(params) {
+    const query = new URLSearchParams({
+        "filter[collection][_eq]": params.collection,
+        "filter[action][_eq]": params.action,
+        fields: "id,policy.name",
+        limit: "50",
+    });
+    const readResponse = await params.deps.fetch(
+        `${params.directusUrl}/permissions?${query.toString()}`,
+        {
+            headers: {
+                authorization: `Bearer ${params.accessToken}`,
+            },
+        },
+    );
+    if (!readResponse.ok) {
+        throw new Error(
+            params.t("directusStaticTokenPersistFailed", {
+                status: readResponse.status,
+            }),
+        );
+    }
+    const readPayload = await readResponse.json();
+    const permission = readDirectusDataArray(readPayload).find((entry) =>
+        isPermissionForPolicyName(entry, params.policyName),
+    );
+    const permissionId = String(permission?.id || "").trim();
+    if (!permissionId) {
+        return;
+    }
+
+    const writeResponse = await params.deps.fetch(
+        `${params.directusUrl}/permissions/${encodeURIComponent(permissionId)}`,
+        {
+            method: "PATCH",
+            headers: {
+                authorization: `Bearer ${params.accessToken}`,
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({
+                permissions: params.permissions,
+            }),
+        },
+    );
+    if (!writeResponse.ok) {
+        throw new Error(
+            params.t("directusStaticTokenPersistFailed", {
+                status: writeResponse.status,
+            }),
+        );
+    }
+}
+
+/**
+ * @param {{
+ *   directusUrl: string;
+ *   accessToken: string;
+ *   deps: InstallerDeps;
+ *   t: InstallTranslator;
+ * }} params
+ */
+async function repairDirectusAccessPolicies(params) {
+    await patchPermissionByPolicyName({
+        ...params,
+        collection: "app_friends",
+        action: "read",
+        policyName: "$t:public_label",
+        permissions: {
+            is_public: {
+                _eq: true,
+            },
+        },
+    });
+}
+
+/**
+ * @param {string} projectRoot
+ * @param {string} envFilePath
  * @param {Record<string, string>} envValues
  * @param {InstallerDeps} deps
  */
@@ -773,7 +1117,12 @@ function buildInstallSummary(params) {
         },
         {
             title: params.t("sectionDirectus"),
-            keys: ["DIRECTUS_URL", "DIRECTUS_STATIC_TOKEN", "DIRECTUS_SECRET"],
+            keys: [
+                "DIRECTUS_URL",
+                "DIRECTUS_WEB_STATIC_TOKEN",
+                "DIRECTUS_WORKER_STATIC_TOKEN",
+                "DIRECTUS_SECRET",
+            ],
         },
         {
             title: params.t("sectionDataServices"),
@@ -796,10 +1145,7 @@ function buildInstallSummary(params) {
         },
         {
             title: params.t("sectionAppSecrets"),
-            keys: [
-                "BANGUMI_TOKEN_ENCRYPTION_KEY",
-                "AI_SUMMARY_INTERNAL_SECRET",
-            ],
+            keys: ["APP_SECRET_ENCRYPTION_KEY", "AI_SUMMARY_INTERNAL_SECRET"],
         },
     ];
 
@@ -828,6 +1174,150 @@ function buildInstallSummary(params) {
     );
     lines.push(params.t("envViewHint"));
     return lines;
+}
+
+/**
+ * @param {{
+ *   accessToken: string;
+ *   deps: InstallerDeps;
+ *   directusUrl: string;
+ *   name: string;
+ *   permissionSpecs: Array<{ collection: string; actions: string[] }>;
+ *   t: InstallTranslator;
+ * }} params
+ * @returns {Promise<string>}
+ */
+async function createDirectusPolicy(params) {
+    const policyResponse = await params.deps.fetch(
+        `${params.directusUrl}/policies`,
+        {
+            method: "POST",
+            headers: {
+                authorization: `Bearer ${params.accessToken}`,
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({
+                name: params.name,
+                description: `${params.name} service access policy`,
+                admin_access: false,
+                app_access: false,
+            }),
+        },
+    );
+    if (!policyResponse.ok) {
+        throw new Error(
+            params.t("directusStaticTokenPersistFailed", {
+                status: policyResponse.status,
+            }),
+        );
+    }
+    const policyPayload = await policyResponse.json();
+    const policyId = String(policyPayload?.data?.id || "").trim();
+    if (!policyId) {
+        throw new Error(params.t("directusAdminUserIdMissing"));
+    }
+
+    for (const spec of params.permissionSpecs) {
+        for (const action of spec.actions) {
+            const permissionResponse = await params.deps.fetch(
+                `${params.directusUrl}/permissions`,
+                {
+                    method: "POST",
+                    headers: {
+                        authorization: `Bearer ${params.accessToken}`,
+                        "content-type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        policy: policyId,
+                        collection: spec.collection,
+                        action,
+                        permissions: {},
+                        validation: {},
+                        presets: {},
+                        fields: ["*"],
+                    }),
+                },
+            );
+            if (!permissionResponse.ok) {
+                throw new Error(
+                    params.t("directusStaticTokenPersistFailed", {
+                        status: permissionResponse.status,
+                    }),
+                );
+            }
+        }
+    }
+
+    return policyId;
+}
+
+/**
+ * @param {{
+ *   accessToken: string;
+ *   deps: InstallerDeps;
+ *   directusUrl: string;
+ *   email: string;
+ *   password: string;
+ *   policyId: string;
+ *   staticToken: string;
+ *   t: InstallTranslator;
+ *   userName: string;
+ * }} params
+ * @returns {Promise<void>}
+ */
+async function createDirectusServiceUser(params) {
+    const createResponse = await params.deps.fetch(
+        `${params.directusUrl}/users`,
+        {
+            method: "POST",
+            headers: {
+                authorization: `Bearer ${params.accessToken}`,
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({
+                email: params.email,
+                password: params.password,
+                status: "active",
+                first_name: params.userName,
+            }),
+        },
+    );
+    if (!createResponse.ok) {
+        throw new Error(
+            params.t("directusStaticTokenPersistFailed", {
+                status: createResponse.status,
+            }),
+        );
+    }
+    const createPayload = await createResponse.json();
+    const userId = String(createPayload?.data?.id || "").trim();
+    if (!userId) {
+        throw new Error(params.t("directusAdminUserIdMissing"));
+    }
+
+    const updateResponse = await params.deps.fetch(
+        `${params.directusUrl}/users/${encodeURIComponent(userId)}`,
+        {
+            method: "PATCH",
+            headers: {
+                authorization: `Bearer ${params.accessToken}`,
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({
+                token: params.staticToken,
+                policies: {
+                    create: [{ policy: params.policyId }],
+                },
+            }),
+        },
+    );
+    if (!updateResponse.ok) {
+        throw new Error(
+            params.t("directusStaticTokenPersistFailed", {
+                status: updateResponse.status,
+            }),
+        );
+    }
 }
 
 /**

@@ -1,26 +1,38 @@
 import type { APIContext } from "astro";
 
-import { badRequest, conflict, forbidden, notFound } from "@/server/api/errors";
+import {
+    AppError,
+    badRequest,
+    conflict,
+    forbidden,
+    notFound,
+} from "@/server/api/errors";
+import { createManagedUpload } from "@/server/application/uploads/upload.service";
 import { DIRECTUS_ROLE_NAME } from "@/server/auth/directus-access";
 import { loadDirectusAccessRegistry } from "@/server/auth/directus-registry";
 import {
     normalizeRequestedUsername,
     validateDisplayName,
 } from "@/server/auth/username";
+import { normalizeDirectusFileId } from "@/server/api/v1/shared/file-cleanup";
 import {
     clearRegistrationRequestCookie,
     normalizeRegistrationRequestId,
 } from "@/server/auth/registration-request-cookie";
+import { syncManagedFileBinding } from "@/server/api/v1/me/_helpers";
 import {
     cancelPendingRegistration,
     createPendingRegistrationUser,
     createRegistrationRequestItem,
+    deleteRegistrationRequest,
     deletePendingRegistrationUser,
     findPendingRegistrationById,
     loadRegistrationSnapshot,
+    readRegistrationAvatarAssetResponse,
     registrationEmailExists,
     registrationHasPendingConflict,
     registrationUsernameExists,
+    setRegistrationRequestAvatar,
     type RegistrationRequestSnapshot,
 } from "@/server/repositories/registration/public-registration.repository";
 import type { AppUserRegistrationRequest } from "@/types/app";
@@ -43,7 +55,7 @@ export type CreateRegistrationCommand = {
     displayName: unknown;
     password: unknown;
     registrationReason: unknown;
-    avatarFile: unknown;
+    avatar: File | null;
 };
 
 export type RegistrationPageState = {
@@ -103,9 +115,48 @@ function parseRegistrationEmail(raw: unknown): string {
     return email;
 }
 
-function parseAvatarFileId(raw: unknown): string | null {
-    const avatarFileRaw = String(raw || "").trim();
-    return avatarFileRaw || null;
+function assertAvatarReplaceAllowedStatus(status: string): void {
+    if (status !== "pending" && status !== "rejected") {
+        throw conflict(
+            "REGISTRATION_STATUS_CONFLICT",
+            "申请状态冲突，请刷新后重试",
+        );
+    }
+}
+
+async function throwUploadError(response: Response): Promise<never> {
+    let message = "头像上传失败";
+    let code = "REGISTRATION_AVATAR_UPLOAD_FAILED";
+    try {
+        const payload = (await response.json()) as {
+            error?: { code?: string; message?: string };
+        };
+        if (payload.error?.message) {
+            message = String(payload.error.message);
+        }
+        if (payload.error?.code) {
+            code = String(payload.error.code);
+        }
+    } catch {
+        // ignore
+    }
+    throw new AppError(code, message, response.status);
+}
+
+async function uploadRegistrationAvatar(file: File): Promise<string> {
+    const uploaded = await createManagedUpload({
+        authorization: {
+            purpose: "registration-avatar",
+            ownerUserId: null,
+        },
+        file,
+        targetFormat: "",
+        requestedTitle: "",
+    });
+    if (uploaded instanceof Response) {
+        return await throwUploadError(uploaded);
+    }
+    return uploaded.file.id;
 }
 
 async function assertRegistrationEmailAvailable(email: string): Promise<void> {
@@ -222,7 +273,6 @@ export async function createPublicRegistration(
     const registrationReason = parseRegistrationReason(
         command.registrationReason,
     );
-    const avatarFile = parseAvatarFileId(command.avatarFile);
 
     await assertNoPendingRegistrationConflict({ email, username });
     await Promise.all([
@@ -243,16 +293,52 @@ export async function createPublicRegistration(
         memberRoleId,
     });
 
+    let createdRequest: AppUserRegistrationRequest | null = null;
     try {
-        return await createRegistrationRequestItem({
+        createdRequest = await createRegistrationRequestItem({
             email,
             username,
             displayName,
-            avatarFile,
+            avatarFile: null,
             registrationReason,
             pendingUserId: pendingUser.id,
         });
+
+        if (command.avatar) {
+            const uploadedAvatarFileId = await uploadRegistrationAvatar(
+                command.avatar,
+            );
+            createdRequest = await setRegistrationRequestAvatar({
+                requestId: createdRequest.id,
+                avatarFileId: uploadedAvatarFileId,
+            });
+            await syncManagedFileBinding({
+                previousFileValue: null,
+                nextFileValue: uploadedAvatarFileId,
+                userId: pendingUser.id,
+                visibility: "private",
+                reference: {
+                    ownerCollection: "app_user_registration_requests",
+                    ownerId: createdRequest.id,
+                    ownerField: "avatar_file",
+                    referenceKind: "structured_field",
+                },
+            });
+        }
+
+        return createdRequest;
     } catch (error) {
+        if (createdRequest?.id) {
+            await deleteRegistrationRequest(createdRequest.id).catch(
+                (cleanupError) => {
+                    console.error(
+                        "[registration] 补偿删除申请失败, requestId:",
+                        createdRequest?.id,
+                        cleanupError,
+                    );
+                },
+            );
+        }
         await deletePendingRegistrationUser(pendingUser.id).catch(
             (cleanupError) => {
                 console.error(
@@ -296,9 +382,96 @@ export async function cancelPublicRegistration(params: {
         await deletePendingRegistrationUser(pendingUserId);
     }
 
-    return await cancelPendingRegistration({
+    const updated = await cancelPendingRegistration({
         requestId: params.requestId,
         reviewedAt: new Date().toISOString(),
+    });
+    await syncManagedFileBinding({
+        previousFileValue: target.avatar_file,
+        nextFileValue: null,
+        userId: pendingUserId || null,
+        visibility: "private",
+        reference: {
+            ownerCollection: "app_user_registration_requests",
+            ownerId: params.requestId,
+            ownerField: "avatar_file",
+            referenceKind: "structured_field",
+        },
+    });
+    return updated;
+}
+
+export async function replacePublicRegistrationAvatar(params: {
+    requestId: string;
+    cookieRequestId: string | null;
+    avatar: File;
+}): Promise<AppUserRegistrationRequest> {
+    if (
+        !params.cookieRequestId ||
+        params.cookieRequestId !== params.requestId
+    ) {
+        throw forbidden(
+            "REGISTRATION_REQUEST_FORBIDDEN",
+            "无法操作当前申请，请刷新后重试",
+        );
+    }
+
+    const target = await findPendingRegistrationById(params.requestId);
+    if (!target) {
+        throw notFound("REGISTRATION_NOT_FOUND", "申请不存在");
+    }
+
+    assertAvatarReplaceAllowedStatus(
+        String(target.request_status || "").trim(),
+    );
+
+    const nextAvatarFileId = await uploadRegistrationAvatar(params.avatar);
+    const updated = await setRegistrationRequestAvatar({
+        requestId: params.requestId,
+        avatarFileId: nextAvatarFileId,
+    });
+    await syncManagedFileBinding({
+        previousFileValue: target.avatar_file,
+        nextFileValue: nextAvatarFileId,
+        userId: String(target.pending_user_id ?? "").trim(),
+        visibility: "private",
+        reference: {
+            ownerCollection: "app_user_registration_requests",
+            ownerId: params.requestId,
+            ownerField: "avatar_file",
+            referenceKind: "structured_field",
+        },
+    });
+    return updated;
+}
+
+export async function loadAuthorizedRegistrationAvatar(params: {
+    requestId: string;
+    cookieRequestId: string | null;
+    query?: Partial<
+        Record<"width" | "height" | "fit" | "quality" | "format", string>
+    >;
+}): Promise<Response> {
+    if (
+        !params.cookieRequestId ||
+        params.cookieRequestId !== params.requestId
+    ) {
+        throw notFound("REGISTRATION_NOT_FOUND", "申请不存在");
+    }
+
+    const target = await findPendingRegistrationById(params.requestId);
+    if (!target) {
+        throw notFound("REGISTRATION_NOT_FOUND", "申请不存在");
+    }
+
+    const avatarFileId = normalizeDirectusFileId(target.avatar_file);
+    if (!avatarFileId) {
+        throw notFound("REGISTRATION_AVATAR_NOT_FOUND", "头像不存在");
+    }
+
+    return await readRegistrationAvatarAssetResponse({
+        fileId: avatarFileId,
+        query: params.query,
     });
 }
 

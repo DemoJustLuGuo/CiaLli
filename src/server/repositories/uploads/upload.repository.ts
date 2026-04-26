@@ -17,7 +17,7 @@ type UploadedFilePayload = {
 function resolveInitialFileVisibility(
     purpose: UploadPurpose,
 ): "private" | "public" {
-    if (purpose === "avatar") {
+    if (purpose === "avatar" || purpose === "registration-avatar") {
         return "private";
     }
     return "public";
@@ -46,24 +46,27 @@ export async function uploadManagedFile(params: {
                   uploadTask,
               );
 
-    if (uploaded.id && (params.title || params.ownerUserId)) {
+    if (
+        uploaded.id &&
+        (params.purpose === "registration-avatar" ||
+            params.title ||
+            params.ownerUserId)
+    ) {
         const metadataTask = async (): Promise<void> => {
             await updateDirectusFileMetadata(uploaded.id, {
                 title: params.title,
                 uploaded_by: params.ownerUserId,
                 app_owner_user_id: params.ownerUserId,
+                app_upload_purpose: params.purpose,
                 app_visibility: resolveInitialFileVisibility(params.purpose),
+                app_lifecycle: "temporary",
+                app_detached_at: null,
+                app_quarantined_at: null,
+                app_deleted_at: null,
             });
         };
 
-        if (params.purpose === "registration-avatar") {
-            await withServiceRepositoryContext(metadataTask);
-        } else {
-            await withUserRepositoryContext(
-                String(params.accessToken || ""),
-                metadataTask,
-            );
-        }
+        await withServiceRepositoryContext(metadataTask);
     }
 
     return uploaded;

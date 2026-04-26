@@ -2,7 +2,15 @@
 	email ops@ciallichannel.com
 }
 
-localhost {
+{$APP_PUBLIC_BASE_URL} {$CADDY_ADDITIONAL_SITE_ADDRESS} {
 	encode gzip zstd
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+	@internal path /api/internal/*
+	respond @internal 404
 	reverse_proxy web:4321
 }

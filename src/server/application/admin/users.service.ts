@@ -28,15 +28,15 @@ import {
 } from "@/server/auth/username";
 import {
     deleteDirectusUser,
-    deleteOne,
+    listDirectusUserPolicyAssignments,
     listDirectusUsers,
     readMany,
     readOneById,
     syncDirectusUserPolicies,
-    updateDirectusFileMetadata,
     updateDirectusUser,
     createOne,
     updateOne,
+    type DirectusUserPolicyAssignment,
 } from "@/server/directus/client";
 import { cacheManager } from "@/server/cache/manager";
 import { badRequest, forbidden } from "@/server/api/errors";
@@ -53,23 +53,24 @@ import {
     AdminUpdateUserSchema,
 } from "@/server/api/schemas";
 import { invalidateOfficialSidebarCache } from "@/server/api/v1/public-data";
-import {
-    cleanupOwnedOrphanDirectusFiles,
-    collectReferencedDirectusFileIds,
-    collectUserOwnedFileIds,
-    normalizeDirectusFileId,
-} from "@/server/api/v1/shared/file-cleanup";
+import { normalizeDirectusFileId } from "@/server/api/v1/shared/file-cleanup";
 
+import { requireAdmin } from "@/server/api/v1/shared/auth";
+import { DEFAULT_LIST_LIMIT } from "@/server/api/v1/shared/constants";
+import { hasOwn } from "@/server/api/v1/shared/helpers";
+import { ensureUsernameAvailable } from "@/server/api/v1/shared/loaders";
+import { normalizeAppRole } from "@/server/api/v1/shared/normalize";
 import {
-    DEFAULT_LIST_LIMIT,
-    ensureUsernameAvailable,
-    hasOwn,
-    normalizeAppRole,
-    parseRouteId,
     parseProfileBioField,
-    requireAdmin,
-} from "@/server/api/v1/shared";
+    parseRouteId,
+} from "@/server/api/v1/shared/parse";
 import { invalidateAuthorCache } from "@/server/api/v1/shared/author-cache";
+import {
+    bindFileOwnerToUser,
+    syncManagedFileBinding,
+} from "@/server/api/v1/me/_helpers";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
+import { searchIndex } from "@/server/application/shared/search-index";
 import {
     clearBlockingUserReferences,
     loadReferencedFilesByUser,
@@ -85,6 +86,27 @@ const MANAGED_POLICY_NAMES = [
     DIRECTUS_POLICY_NAME.manageAlbums,
     DIRECTUS_POLICY_NAME.uploadFiles,
 ] as const;
+
+function isInternalServiceAccountEmail(email: unknown): boolean {
+    const normalizedEmail = String(email || "")
+        .trim()
+        .toLowerCase();
+    return (
+        normalizedEmail.startsWith("svc-web-") ||
+        normalizedEmail.startsWith("svc-worker-")
+    );
+}
+
+function isInternalServiceUser(user: AppUser | null | undefined): boolean {
+    return Boolean(user && isInternalServiceAccountEmail(user.email));
+}
+
+function isVisibleManagedUser(user: AppUser): boolean {
+    if (isInternalServiceUser(user)) {
+        return false;
+    }
+    return String(user.status || "").trim() !== "draft";
+}
 
 type AdminUserRow = {
     user: AppUser;
@@ -239,35 +261,57 @@ async function applyAvatarFileChange(
     if (!hasAvatarPatch && !hasOwn(body, "profile_public")) {
         return;
     }
-    if (nextAvatarFile) {
-        await updateDirectusFileMetadata(nextAvatarFile, {
-            uploaded_by: userId,
-            app_owner_user_id: userId,
-            app_visibility: nextProfilePublic ? "public" : "private",
+    if (hasAvatarPatch) {
+        await syncManagedFileBinding({
+            previousFileValue: prevAvatarFile,
+            nextFileValue: nextAvatarFile,
+            userId,
+            visibility: nextProfilePublic ? "public" : "private",
+            reference: {
+                ownerCollection: "directus_users",
+                ownerId: userId,
+                ownerField: "avatar",
+                referenceKind: "structured_field",
+            },
         });
+        return;
     }
-    if (hasAvatarPatch && prevAvatarFile && prevAvatarFile !== nextAvatarFile) {
-        await cleanupOwnedOrphanDirectusFiles({
-            candidateFileIds: [prevAvatarFile],
-            ownerUserIds: [userId],
-        });
+    if (nextAvatarFile) {
+        await bindFileOwnerToUser(
+            nextAvatarFile,
+            userId,
+            undefined,
+            nextProfilePublic ? "public" : "private",
+            {
+                ownerCollection: "directus_users",
+                ownerId: userId,
+                ownerField: "avatar",
+                referenceKind: "structured_field",
+            },
+        );
     }
 }
 
 function extractSnapshot(
     user: AppUser,
     registry: Awaited<ReturnType<typeof loadDirectusAccessRegistry>>,
+    accessAssignments: readonly DirectusUserPolicyAssignment[] = [],
 ): DirectusUserSnapshot {
     const roleName = extractDirectusRoleName(user.role);
-    const policyIds = extractDirectusPolicyIds(user.policies);
+    const policyIds = Array.from(
+        new Set([
+            ...extractDirectusPolicyIds(user.policies),
+            ...accessAssignments.map((assignment) =>
+                String(assignment.policy || "").trim(),
+            ),
+        ]),
+    ).filter(Boolean);
     const policyNames = resolvePolicyNames(policyIds, registry.policyNameById);
     return {
         roleName,
         policyIds,
         policyNames,
-        isPlatformAdmin:
-            isPlatformAdministratorRoleName(roleName) ||
-            policyNames.includes(DIRECTUS_ROLE_NAME.administrator),
+        isPlatformAdmin: isPlatformAdministratorRoleName(roleName),
     };
 }
 
@@ -281,8 +325,9 @@ function buildProfileView(profile: AppProfile, user: AppUser): AppProfileView {
 function buildPermissionSnapshot(
     user: AppUser,
     registry: Awaited<ReturnType<typeof loadDirectusAccessRegistry>>,
+    accessAssignments: readonly DirectusUserPolicyAssignment[] = [],
 ): AppPermissions {
-    const snapshot = extractSnapshot(user, registry);
+    const snapshot = extractSnapshot(user, registry, accessAssignments);
     return buildPermissionsFromDirectus({
         roleName: snapshot.roleName,
         policyNames: snapshot.policyNames,
@@ -568,7 +613,10 @@ async function handleUsersList(context: APIContext): Promise<Response> {
         }),
         loadDirectusAccessRegistry(),
     ]);
-    const userIds = users.map((user) => user.id);
+    const visibleUsers = users.filter(isVisibleManagedUser);
+    const userIds = visibleUsers.map((user) => user.id);
+    const accessAssignmentsByUser =
+        await listDirectusUserPolicyAssignments(userIds);
     const filterByIds =
         userIds.length > 0
             ? ({ user_id: { _in: userIds } } as JsonObject)
@@ -584,8 +632,12 @@ async function handleUsersList(context: APIContext): Promise<Response> {
     }
 
     const items = applyAdminUsersSort({
-        items: users.map((user) => {
-            const snapshot = extractSnapshot(user, registry);
+        items: visibleUsers.map((user) => {
+            const snapshot = extractSnapshot(
+                user,
+                registry,
+                accessAssignmentsByUser.get(user.id),
+            );
             const profile = profileMap.get(user.id) || null;
             return {
                 user,
@@ -608,7 +660,7 @@ async function handleUsersList(context: APIContext): Promise<Response> {
         items,
         page,
         limit,
-        total: users.length,
+        total: visibleUsers.length,
     });
 }
 
@@ -628,8 +680,21 @@ async function handleUserPatch(
         return fail("用户不存在", 404);
     }
 
-    const actingSnapshot = extractSnapshot(actingAdminUser, registry);
-    const targetSnapshot = extractSnapshot(targetUser, registry);
+    const accessAssignmentsByUser = await listDirectusUserPolicyAssignments([
+        actingAdminUser.id,
+        targetUser.id,
+    ]);
+    const actingSnapshot = extractSnapshot(
+        actingAdminUser,
+        registry,
+        accessAssignmentsByUser.get(actingAdminUser.id),
+    );
+    const targetAssignments = accessAssignmentsByUser.get(targetUser.id) ?? [];
+    const targetSnapshot = extractSnapshot(
+        targetUser,
+        registry,
+        targetAssignments,
+    );
     assertEditableBySiteAdmin({
         actingIsPlatformAdmin: actingSnapshot.isPlatformAdmin,
         targetIsPlatformAdmin: targetSnapshot.isPlatformAdmin,
@@ -655,7 +720,11 @@ async function handleUserPatch(
         directusPayload.avatar = input.avatar_file ?? null;
     }
 
-    const currentPermissions = buildPermissionSnapshot(targetUser, registry);
+    const currentPermissions = buildPermissionSnapshot(
+        targetUser,
+        registry,
+        targetAssignments,
+    );
     const mergedPermissions = mergePermissions(
         currentPermissions,
         extractPermissionPatch(input),
@@ -688,17 +757,7 @@ async function handleUserPatch(
         });
         await syncDirectusUserPolicies({
             userId,
-            currentAssignments: Array.isArray(targetUser.policies)
-                ? targetUser.policies
-                      .filter(
-                          (entry): entry is { id?: string; policy?: string } =>
-                              Boolean(entry && typeof entry === "object"),
-                      )
-                      .map((entry) => ({
-                          id: String(entry.id ?? "").trim(),
-                          policy: String(entry.policy ?? "").trim(),
-                      }))
-                : [],
+            currentAssignments: targetAssignments,
             desiredPolicyIds,
         });
     }
@@ -740,33 +799,28 @@ async function handleUserPatch(
 
     const refreshedUser =
         (await loadDirectusUserForAdmin(userId)) || targetUser;
+    const refreshedAssignmentsByUser = await listDirectusUserPolicyAssignments([
+        userId,
+    ]);
+    const refreshedSnapshot = extractSnapshot(
+        refreshedUser,
+        registry,
+        refreshedAssignmentsByUser.get(userId),
+    );
     return ok({
         id: userId,
         user: refreshedUser,
         profile: buildProfileView(updatedProfile, refreshedUser),
-        permissions: buildPermissionSnapshot(refreshedUser, registry),
-        is_platform_admin: extractSnapshot(refreshedUser, registry)
-            .isPlatformAdmin,
+        permissions: buildPermissionsFromDirectus({
+            roleName: refreshedSnapshot.roleName,
+            policyNames: refreshedSnapshot.policyNames,
+            isPlatformAdmin: refreshedSnapshot.isPlatformAdmin,
+        }),
+        is_platform_admin: refreshedSnapshot.isPlatformAdmin,
         is_site_admin:
             extractDirectusRoleName(refreshedUser.role) ===
             DIRECTUS_ROLE_NAME.siteAdmin,
     });
-}
-
-async function collectCandidateFileIds(userId: string): Promise<string[]> {
-    try {
-        return await collectUserOwnedFileIds(userId);
-    } catch (error) {
-        const message = String(error);
-        if (/forbidden|permission/i.test(message)) {
-            console.warn(
-                "[admin/users] skip collectUserOwnedFileIds due to permission:",
-                message,
-            );
-            return [];
-        }
-        throw error;
-    }
 }
 
 async function handleUserDelete(
@@ -785,6 +839,13 @@ async function handleUserDelete(
         if (!targetUser) {
             return fail("用户不存在", 404);
         }
+        if (isInternalServiceUser(targetUser)) {
+            return fail(
+                "服务账号由安装器和部署环境维护，不能在用户管理中删除",
+                403,
+                "SERVICE_ACCOUNT_MANAGED_EXTERNALLY",
+            );
+        }
 
         const actingSnapshot = extractSnapshot(actingAdminUser, registry);
         const targetSnapshot = extractSnapshot(targetUser, registry);
@@ -793,38 +854,48 @@ async function handleUserDelete(
             targetIsPlatformAdmin: targetSnapshot.isPlatformAdmin,
         });
 
-        const candidateFileIds = await collectCandidateFileIds(userId);
-        const referencedFileIds =
-            await collectReferencedDirectusFileIds(candidateFileIds);
-        const removableFileIds = candidateFileIds.filter(
-            (fileId) => !referencedFileIds.has(fileId),
-        );
+        const [profiles, registrationRequests, remainingFiles] =
+            await Promise.all([
+                readMany("app_user_profiles", {
+                    filter: { user_id: { _eq: userId } } as JsonObject,
+                    limit: 10,
+                    fields: ["id", "header_file"],
+                }),
+                readMany("app_user_registration_requests", {
+                    filter: {
+                        _or: [
+                            { approved_user_id: { _eq: userId } },
+                            { pending_user_id: { _eq: userId } },
+                        ],
+                    } as JsonObject,
+                    limit: 200,
+                    fields: ["id", "avatar_file"],
+                }),
+                loadReferencedFilesByUser(userId),
+            ]);
 
-        const [profiles, registrationRequests] = await Promise.all([
-            readMany("app_user_profiles", {
-                filter: { user_id: { _eq: userId } } as JsonObject,
-                limit: 10,
-                fields: ["id"],
-            }),
-            readMany("app_user_registration_requests", {
-                filter: {
-                    _or: [
-                        { approved_user_id: { _eq: userId } },
-                        { pending_user_id: { _eq: userId } },
-                    ],
-                } as JsonObject,
-                limit: 200,
-                fields: ["id", "avatar_file"],
-            }),
-        ]);
+        await clearBlockingUserReferences(userId);
+        await nullifyReferencedFileOwnership(remainingFiles, userId);
+        await deleteDirectusUser(userId);
 
         for (const profile of profiles) {
-            await deleteOne("app_user_profiles", profile.id).catch((error) => {
-                console.warn(
-                    "[admin/users] 删除 profile 失败, profileId:",
-                    profile.id,
-                    error,
-                );
+            await resourceLifecycle.releaseOwnerResources({
+                ownerCollection: "app_user_profiles",
+                ownerId: profile.id,
+            });
+        }
+        for (const request of registrationRequests) {
+            await syncManagedFileBinding({
+                previousFileValue: request.avatar_file,
+                nextFileValue: null,
+                userId: null,
+                visibility: "private",
+                reference: {
+                    ownerCollection: "app_user_registration_requests",
+                    ownerId: request.id,
+                    ownerField: "avatar_file",
+                    referenceKind: "structured_field",
+                },
             });
         }
         await nullifyRegistrationRequestAvatars(registrationRequests).catch(
@@ -836,31 +907,15 @@ async function handleUserDelete(
                 );
             },
         );
-        // 先删明确孤立的文件，再清空剩余文件归属，避免 directus_files 外键阻塞用户删除。
-        await cleanupOwnedOrphanDirectusFiles({
-            candidateFileIds: removableFileIds,
-            ownerUserIds: [userId],
-        }).catch((error) => {
-            console.warn(
-                "[admin/users] 预清理孤立文件失败, userId:",
-                userId,
-                error,
-            );
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "directus_users",
+            ownerId: userId,
         });
-
-        const remainingFiles = await loadReferencedFilesByUser(userId);
-        await nullifyReferencedFileOwnership(remainingFiles, userId);
-        await clearBlockingUserReferences(userId);
-        await deleteDirectusUser(userId);
-        await cleanupOwnedOrphanDirectusFiles({
-            candidateFileIds,
-            ownerUserIds: [userId],
-        }).catch((error) => {
-            console.warn(
-                "[admin/users] 清理孤立文件失败, userId:",
-                userId,
-                error,
-            );
+        await searchIndex.remove("user", userId);
+        console.info("[audit] user.delete", {
+            userId,
+            profileCount: profiles.length,
+            registrationRequestCount: registrationRequests.length,
         });
         invalidateAuthorCache(userId);
         invalidateOfficialSidebarCache();

@@ -6,17 +6,71 @@ import {
     type ServerResponse,
 } from "node:http";
 
+import { readFileGcIntervalMs, runFileGcBatch } from "@/server/files/file-gc";
+import {
+    recoverStuckFileDetachJobs,
+    readFileDetachJobBatchSize,
+    readFileDetachJobIntervalMs,
+    readPendingFileDetachJobs,
+    runFileDetachJob,
+} from "@/server/files/file-detach-jobs";
+import {
+    readFileLifecycleReconcileIntervalMs,
+    runManagedFileLifecycleReconciliation,
+} from "@/server/files/file-lifecycle-reconciliation";
+import {
+    readFileReferenceShadowIntervalMs,
+    runFileReferenceShadowComparison,
+} from "@/server/files/file-reference-shadow";
 import { loadDecryptedAiSettings } from "@/server/ai-summary/config";
 import {
     recoverStuckSummaryJobs,
+    readAiSummaryJobBatchSize,
     readPendingSummaryJobs,
 } from "@/server/ai-summary/jobs";
 import { verifyInternalSecretHeader } from "@/server/ai-summary/internal-auth";
 import { runAiSummaryJob } from "@/server/ai-summary/runner";
 import type { RunAiSummaryJobResult } from "@/server/ai-summary/runner";
 import { runWithDirectusServiceAccess } from "@/server/directus/client";
+import { createNonOverlappingScheduler } from "@/worker/task-scheduler";
 
 const DEFAULT_PORT = 4322;
+const CONSUMER_INTERVAL_MS = 5_000;
+
+let activeExecutions = 0;
+const executionWaiters: Array<() => void> = [];
+
+function readMaxConcurrency(): number {
+    const raw = String(
+        process.env.AI_SUMMARY_MAX_CONCURRENCY ||
+            import.meta.env.AI_SUMMARY_MAX_CONCURRENCY ||
+            "",
+    ).trim();
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return 3;
+    }
+    return Math.floor(parsed);
+}
+
+async function withExecutionSlot<T>(task: () => Promise<T>): Promise<T> {
+    while (activeExecutions >= readMaxConcurrency()) {
+        await new Promise<void>((resolve) => {
+            executionWaiters.push(resolve);
+        });
+    }
+
+    activeExecutions += 1;
+    try {
+        return await task();
+    } finally {
+        activeExecutions = Math.max(0, activeExecutions - 1);
+        const next = executionWaiters.shift();
+        if (next) {
+            next();
+        }
+    }
+}
 
 function sendJson(
     response: ServerResponse,
@@ -58,20 +112,165 @@ function readNumber(value: unknown, fallback: number): number {
 async function processJob(jobId: string): Promise<Record<string, unknown>> {
     return await runWithDirectusServiceAccess(async () => {
         const settings = await loadDecryptedAiSettings();
-        return await runAiSummaryJob({ jobId, settings });
+        return await withExecutionSlot(
+            async () => await runAiSummaryJob({ jobId, settings }),
+        );
     });
 }
 
 async function processDueJobs(limit: number): Promise<Record<string, unknown>> {
     return await runWithDirectusServiceAccess(async () => {
-        const jobIds = await readPendingSummaryJobs(limit);
+        const now = new Date();
+        const jobIds = await readPendingSummaryJobs(limit, now);
         const settings = await loadDecryptedAiSettings();
-        const results: RunAiSummaryJobResult[] = [];
-        for (const jobId of jobIds) {
-            results.push(await runAiSummaryJob({ jobId, settings }));
-        }
+        const results = await Promise.all(
+            jobIds.map(
+                async (jobId): Promise<RunAiSummaryJobResult> =>
+                    await withExecutionSlot(
+                        async () =>
+                            await runAiSummaryJob({ jobId, settings, now }),
+                    ),
+            ),
+        );
         return { processed: results.length, results };
     });
+}
+
+const aiSummaryScheduler = createNonOverlappingScheduler({
+    task: async (trigger) => {
+        const now = new Date();
+        const recovered = await runWithDirectusServiceAccess(
+            async () => await recoverStuckSummaryJobs(now),
+        );
+        const processed = await processDueJobs(readAiSummaryJobBatchSize());
+        console.info("[ai-summary-worker] scheduler tick", {
+            trigger,
+            recovered,
+            processed: processed.processed,
+        });
+    },
+});
+
+const fileGcScheduler = createNonOverlappingScheduler({
+    task: async (trigger) => {
+        const result = await runFileGcBatch();
+        console.info("[file-gc-worker] scheduler tick", {
+            trigger,
+            scanned: result.scanned,
+            referenced: result.referenced,
+            quarantined: result.quarantined,
+            recovered: result.recovered,
+            deleted: result.deleted,
+        });
+    },
+});
+
+const fileDetachJobScheduler = createNonOverlappingScheduler({
+    task: async (trigger) => {
+        const now = new Date();
+        const recovered = await recoverStuckFileDetachJobs(now);
+        const jobIds = await readPendingFileDetachJobs(
+            readFileDetachJobBatchSize(),
+            now,
+        );
+        const results = await Promise.all(
+            jobIds.map(async (jobId) => await runFileDetachJob(jobId, now)),
+        );
+        const detached = results.reduce(
+            (sum, result) => sum + result.detached,
+            0,
+        );
+        console.info("[file-detach-job-worker] scheduler tick", {
+            trigger,
+            recovered,
+            processed: results.length,
+            detached,
+        });
+    },
+});
+
+const fileLifecycleReconciliationScheduler = createNonOverlappingScheduler({
+    task: async (trigger) => {
+        const result = await runManagedFileLifecycleReconciliation();
+        console.info("[file-lifecycle-reconcile-worker] scheduler tick", {
+            trigger,
+            attached: result.attached,
+            detached: result.detached,
+            temporary: result.temporary,
+            quarantined: result.quarantined,
+            deleted: result.deleted,
+            protected: result.protected,
+        });
+    },
+});
+
+const fileReferenceShadowScheduler = createNonOverlappingScheduler({
+    task: async (trigger) => {
+        const result = await runFileReferenceShadowComparison();
+        console.info("[file-reference-shadow-worker] scheduler tick", {
+            trigger,
+            legacyCount: result.legacyCount,
+            tableCount: result.tableCount,
+            missingInTable: result.missingInTable.length,
+            extraInTable: result.extraInTable.length,
+        });
+    },
+});
+
+async function runAiSummarySchedulerTick(
+    trigger: "startup" | "interval",
+): Promise<void> {
+    try {
+        await aiSummaryScheduler.run(trigger);
+    } catch (error) {
+        console.error("[ai-summary-worker] scheduler tick failed", error);
+    }
+}
+
+async function runFileGcSchedulerTick(
+    trigger: "startup" | "interval",
+): Promise<void> {
+    try {
+        await fileGcScheduler.run(trigger);
+    } catch (error) {
+        console.error("[file-gc-worker] scheduler tick failed", error);
+    }
+}
+
+async function runFileDetachJobSchedulerTick(
+    trigger: "startup" | "interval",
+): Promise<void> {
+    try {
+        await fileDetachJobScheduler.run(trigger);
+    } catch (error) {
+        console.error("[file-detach-job-worker] scheduler tick failed", error);
+    }
+}
+
+async function runFileLifecycleReconciliationSchedulerTick(
+    trigger: "startup" | "interval",
+): Promise<void> {
+    try {
+        await fileLifecycleReconciliationScheduler.run(trigger);
+    } catch (error) {
+        console.error(
+            "[file-lifecycle-reconcile-worker] scheduler tick failed",
+            error,
+        );
+    }
+}
+
+async function runFileReferenceShadowSchedulerTick(
+    trigger: "startup" | "interval",
+): Promise<void> {
+    try {
+        await fileReferenceShadowScheduler.run(trigger);
+    } catch (error) {
+        console.error(
+            "[file-reference-shadow-worker] scheduler tick failed",
+            error,
+        );
+    }
 }
 
 async function handleProcessJob(
@@ -95,8 +294,11 @@ async function handleProcessDue(
 ): Promise<void> {
     const limit =
         body && typeof body === "object"
-            ? readNumber((body as { limit?: unknown }).limit, 3)
-            : 3;
+            ? readNumber(
+                  (body as { limit?: unknown }).limit,
+                  readAiSummaryJobBatchSize(),
+              )
+            : readAiSummaryJobBatchSize();
     sendJson(response, 200, { ok: true, ...(await processDueJobs(limit)) });
 }
 
@@ -157,4 +359,24 @@ createServer((request, response) => {
     });
 }).listen(port, () => {
     console.info(`[ai-summary-worker] listening on ${port}`);
+    void runAiSummarySchedulerTick("startup");
+    void runFileDetachJobSchedulerTick("startup");
+    void runFileGcSchedulerTick("startup");
+    void runFileLifecycleReconciliationSchedulerTick("startup");
+    void runFileReferenceShadowSchedulerTick("startup");
+    setInterval(() => {
+        void runAiSummarySchedulerTick("interval");
+    }, CONSUMER_INTERVAL_MS);
+    setInterval(() => {
+        void runFileDetachJobSchedulerTick("interval");
+    }, readFileDetachJobIntervalMs());
+    setInterval(() => {
+        void runFileGcSchedulerTick("interval");
+    }, readFileGcIntervalMs());
+    setInterval(() => {
+        void runFileLifecycleReconciliationSchedulerTick("interval");
+    }, readFileLifecycleReconcileIntervalMs());
+    setInterval(() => {
+        void runFileReferenceShadowSchedulerTick("interval");
+    }, readFileReferenceShadowIntervalMs());
 });

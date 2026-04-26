@@ -8,6 +8,7 @@ import {
     customEndpoint,
     deleteFile,
     deleteItem,
+    readFile,
     readItem,
     readItems,
     readFiles,
@@ -16,6 +17,7 @@ import {
     rest,
     staticToken,
     updateItem,
+    updateItems,
     updateFile,
     updateUser,
     uploadFiles,
@@ -23,6 +25,8 @@ import {
 } from "@directus/sdk";
 
 import type { AppUser } from "@/types/app";
+import type { UploadPurpose } from "@/constants/upload-limits";
+import type { AppFileLifecycle } from "@/types/app";
 import type { JsonObject } from "@/types/json";
 import { internal } from "@/server/api/errors";
 import { getDirectusUrl } from "@/server/directus-auth";
@@ -69,9 +73,13 @@ type DirectusRoleRecord = {
     users?: string[] | null;
 };
 
-type DirectusUserPolicyAssignment = {
+export type DirectusUserPolicyAssignment = {
     id: string;
     policy: string;
+};
+
+type DirectusAccessPolicyAssignment = DirectusUserPolicyAssignment & {
+    user: string;
 };
 
 type BatchCollectionPath =
@@ -100,10 +108,14 @@ const directusScopeStorage = new AsyncLocalStorage<DirectusRequestScope>();
 
 function getStaticToken(): string {
     const token =
-        process.env.DIRECTUS_STATIC_TOKEN ||
-        import.meta.env.DIRECTUS_STATIC_TOKEN;
+        process.env.DIRECTUS_WEB_STATIC_TOKEN ||
+        process.env.DIRECTUS_WORKER_STATIC_TOKEN ||
+        import.meta.env.DIRECTUS_WEB_STATIC_TOKEN ||
+        import.meta.env.DIRECTUS_WORKER_STATIC_TOKEN;
     if (!token || !token.trim()) {
-        throw internal("DIRECTUS_STATIC_TOKEN 未配置");
+        throw internal(
+            "DIRECTUS_WEB_STATIC_TOKEN / DIRECTUS_WORKER_STATIC_TOKEN 未配置",
+        );
     }
     return token.trim();
 }
@@ -309,6 +321,16 @@ export async function readOneById<K extends keyof DirectusSchema>(
             );
             return user as DirectusSchema[K][number];
         }
+        if (collection === "directus_files") {
+            const file = await executeDirectusRequest(
+                "读取文件明细",
+                readFile(id, {
+                    fields: query?.fields,
+                    deep: query?.deep,
+                } as never),
+            );
+            return file as DirectusSchema[K][number];
+        }
 
         const item = await executeDirectusRequest(
             `读取集合 ${String(collection)} 明细`,
@@ -421,6 +443,24 @@ export async function updateOne<K extends keyof DirectusSchema>(
             } as never,
         ),
     )) as DirectusSchema[K][number];
+}
+
+export async function updateMany<K extends keyof DirectusSchema>(
+    collection: K,
+    keysOrQuery: string[] | number[] | DirectusQuery,
+    payload: Partial<DirectusSchema[K][number]>,
+    query?: DirectusQuery,
+): Promise<DirectusSchema[K]> {
+    assertNonSystemCollection(collection);
+    return (await executeDirectusRequest(
+        `批量更新集合 ${String(collection)} 数据`,
+        updateItems(
+            collection as never,
+            keysOrQuery as never,
+            payload as never,
+            query as never,
+        ),
+    )) as DirectusSchema[K];
 }
 
 export async function deleteOne<K extends keyof DirectusSchema>(
@@ -536,6 +576,64 @@ export async function syncDirectusUserPolicies(params: {
             } as never,
         ),
     );
+}
+
+function normalizeAccessPolicyAssignment(
+    input: Record<string, unknown>,
+): DirectusAccessPolicyAssignment | null {
+    const id = String(input.id ?? "").trim();
+    const user = String(input.user ?? "").trim();
+    const policy = String(input.policy ?? "").trim();
+    if (!id || !user || !policy) {
+        return null;
+    }
+    return { id, user, policy };
+}
+
+export async function listDirectusUserPolicyAssignments(
+    userIds: readonly string[],
+): Promise<Map<string, DirectusUserPolicyAssignment[]>> {
+    const normalizedUserIds = Array.from(
+        new Set(
+            userIds
+                .map((userId) => String(userId || "").trim())
+                .filter(Boolean),
+        ),
+    );
+    const assignmentsByUser = new Map<string, DirectusUserPolicyAssignment[]>();
+    for (const userId of normalizedUserIds) {
+        assignmentsByUser.set(userId, []);
+    }
+    if (normalizedUserIds.length === 0) {
+        return assignmentsByUser;
+    }
+
+    const response = await executeDirectusRequest(
+        "读取 Directus 用户策略关联",
+        customEndpoint({
+            path: "/access",
+            method: "GET",
+            params: {
+                filter: { user: { _in: normalizedUserIds } },
+                fields: ["id", "user", "policy"],
+                limit: Math.max(normalizedUserIds.length * 20, 100),
+            },
+        }),
+    );
+
+    for (const item of parseItemArrayResponse<Record<string, unknown>>(
+        response,
+    )) {
+        const assignment = normalizeAccessPolicyAssignment(item);
+        if (!assignment || !assignmentsByUser.has(assignment.user)) {
+            continue;
+        }
+        assignmentsByUser.get(assignment.user)?.push({
+            id: assignment.id,
+            policy: assignment.policy,
+        });
+    }
+    return assignmentsByUser;
 }
 
 export async function deleteDirectusUser(id: string): Promise<void> {
@@ -670,23 +768,111 @@ export async function uploadDirectusFile(params: {
     };
 }
 
+export type DirectusFileMetadataPayload = {
+    title?: string | null;
+    description?: string | null;
+    filename_download?: string | null;
+    folder?: string | null;
+    uploaded_by?: string | null;
+    modified_by?: string | null;
+    app_owner_user_id?: string | null;
+    app_upload_purpose?: UploadPurpose | null;
+    app_visibility?: "private" | "public" | null;
+    app_lifecycle?: AppFileLifecycle | null;
+    app_detached_at?: string | null;
+    app_quarantined_at?: string | null;
+    app_deleted_at?: string | null;
+    app_delete_attempts?: number | null;
+    app_delete_next_retry_at?: string | null;
+    app_delete_last_error?: string | null;
+    app_delete_dead_lettered_at?: string | null;
+};
+
 export async function updateDirectusFileMetadata(
     id: string,
-    payload: {
-        title?: string | null;
-        description?: string | null;
-        filename_download?: string | null;
-        folder?: string | null;
-        uploaded_by?: string | null;
-        modified_by?: string | null;
-        app_owner_user_id?: string | null;
-        app_visibility?: "private" | "public" | null;
-    },
+    payload: DirectusFileMetadataPayload,
 ): Promise<void> {
     await executeDirectusRequest(
         "更新 Directus 文件元数据",
         updateFile(id, payload as never),
     );
+}
+
+export async function updateDirectusFilesByFilter(params: {
+    filter: JsonObject;
+    data: DirectusFileMetadataPayload;
+    limit?: number;
+    fields?: string[];
+}): Promise<Array<{ id: string }>> {
+    const query: { filter: JsonObject; limit?: number } = {
+        filter: params.filter,
+    };
+    if (params.limit !== undefined) {
+        query.limit = params.limit;
+    }
+    const fields =
+        params.fields && params.fields.length > 0 ? params.fields : ["id"];
+    const response = await executeDirectusRequest(
+        "按条件更新 Directus 文件元数据",
+        customEndpoint({
+            path: "/files",
+            method: "PATCH",
+            params: { fields },
+            body: JSON.stringify({
+                query,
+                data: params.data,
+            }) as never,
+        }),
+    );
+
+    return parseItemArrayResponse<Record<string, unknown>>(response)
+        .map((item) => String(item.id ?? "").trim())
+        .filter(Boolean)
+        .map((id) => ({ id }));
+}
+
+export type DeleteDirectusFileResult =
+    | {
+          ok: true;
+          fileId: string;
+      }
+    | {
+          ok: false;
+          fileId: string;
+          reason: "not_found" | "permission" | "network" | "unknown";
+      };
+
+function classifyDirectusFileDeleteError(
+    error: unknown,
+): Extract<DeleteDirectusFileResult, { ok: false }>["reason"] {
+    const message = String(error).toLowerCase();
+    if (
+        message.includes("not found") ||
+        message.includes("404") ||
+        message.includes("item_not_found")
+    ) {
+        return "not_found";
+    }
+    if (
+        message.includes("forbidden") ||
+        message.includes("permission") ||
+        message.includes("unauthorized") ||
+        message.includes("403") ||
+        message.includes("401")
+    ) {
+        return "permission";
+    }
+    if (
+        message.includes("network") ||
+        message.includes("fetch") ||
+        message.includes("timeout") ||
+        message.includes("socket") ||
+        message.includes("econn") ||
+        message.includes("connect")
+    ) {
+        return "network";
+    }
+    return "unknown";
 }
 
 export async function updateManyItemsByFilter(params: {
@@ -728,18 +914,28 @@ export async function updateManyItemsByFilter(params: {
     );
 }
 
-export async function deleteDirectusFile(fileId: string): Promise<void> {
+export async function deleteDirectusFile(
+    fileId: string,
+): Promise<DeleteDirectusFileResult> {
     if (!fileId) {
-        return;
+        return {
+            ok: false,
+            fileId,
+            reason: "unknown",
+        };
     }
     try {
         await executeDirectusRequest("删除 Directus 文件", deleteFile(fileId));
-    } catch (error) {
-        console.warn(
-            "[directus/client] 删除文件失败，可能已不存在:",
+        return {
+            ok: true,
             fileId,
-            error,
-        );
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            fileId,
+            reason: classifyDirectusFileDeleteError(error),
+        };
     }
 }
 

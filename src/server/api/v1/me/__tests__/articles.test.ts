@@ -7,6 +7,7 @@ import {
     parseResponseJson,
 } from "@/__tests__/helpers/mock-api-context";
 import { mockArticle } from "@/__tests__/helpers/mock-data";
+import type { AppError } from "@/server/api/errors";
 
 // ── mock 依赖 ──
 
@@ -15,6 +16,7 @@ vi.mock("@/server/directus/client", () => ({
     createOne: vi.fn(),
     updateOne: vi.fn(),
     deleteOne: vi.fn(),
+    deleteDirectusFile: vi.fn(),
     updateDirectusFileMetadata: vi.fn(),
 }));
 
@@ -61,16 +63,35 @@ vi.mock("@/server/api/v1/shared/file-cleanup", () => ({
             ownerUserIds: groups.flatMap((group) => group.ownerUserIds),
         }),
     ),
-    cleanupOwnedOrphanDirectusFiles: vi.fn().mockResolvedValue([]),
 }));
 
-import { readMany, updateOne } from "@/server/directus/client";
+vi.mock("@/server/api/v1/me/_helpers", () => ({
+    deleteFileReferencesForOwner: vi.fn().mockResolvedValue(0),
+    bindFileOwnerToUser: vi.fn().mockResolvedValue(undefined),
+    detachManagedFiles: vi.fn().mockResolvedValue([]),
+    renderMeMarkdownPreview: vi.fn().mockResolvedValue("<p>preview</p>"),
+    syncManagedFileBinding: vi.fn().mockResolvedValue({
+        attachedFileIds: [],
+        detachedFileIds: [],
+        nextFileIds: [],
+    }),
+    syncMarkdownFileLifecycle: vi.fn().mockResolvedValue({
+        attachedFileIds: [],
+        detachedFileIds: [],
+        nextFileIds: [],
+    }),
+    syncMarkdownFilesToVisibility: vi.fn().mockResolvedValue([]),
+}));
+
+import {
+    deleteDirectusFile,
+    readMany,
+    updateOne,
+} from "@/server/directus/client";
 import { enqueueAndTriggerArticleSummaryJob } from "@/server/ai-summary/dispatch";
 import { cacheManager } from "@/server/cache/manager";
-import {
-    cleanupOwnedOrphanDirectusFiles,
-    extractDirectusAssetIdsFromMarkdown,
-} from "@/server/api/v1/shared/file-cleanup";
+import { extractDirectusAssetIdsFromMarkdown } from "@/server/api/v1/shared/file-cleanup";
+import { syncManagedFileBinding } from "@/server/api/v1/me/_helpers";
 import { createWithShortId } from "@/server/utils/short-id";
 
 import { handleMeArticles } from "@/server/api/v1/me/articles";
@@ -82,12 +103,11 @@ const mockedEnqueueAndTriggerArticleSummaryJob = vi.mocked(
 );
 const mockedCacheInvalidate = vi.mocked(cacheManager.invalidate);
 const mockedCreateWithShortId = vi.mocked(createWithShortId);
-const mockedCleanupOwnedOrphanDirectusFiles = vi.mocked(
-    cleanupOwnedOrphanDirectusFiles,
-);
+const mockedDeleteDirectusFile = vi.mocked(deleteDirectusFile);
 const mockedExtractDirectusAssetIdsFromMarkdown = vi.mocked(
     extractDirectusAssetIdsFromMarkdown,
 );
+const mockedSyncManagedFileBinding = vi.mocked(syncManagedFileBinding);
 
 function readLastArticleUpdatePayload(): Record<string, unknown> {
     const latestCall = mockedUpdateOne.mock.calls.at(-1);
@@ -179,6 +199,52 @@ describe("POST /me/articles", () => {
                 "articles",
             ]),
         ).rejects.toThrow();
+    });
+
+    it("标题为空白时创建发布文章失败且错误文案非空", async () => {
+        const ctx = createMockAPIContext({
+            method: "POST",
+            url: "http://localhost:4321/api/v1/me/articles",
+            body: {
+                title: "   ",
+                body_markdown: "正文",
+            },
+        });
+        const access = createMemberAccess();
+
+        await expect(
+            handleMeArticles(ctx as unknown as APIContext, access, [
+                "articles",
+            ]),
+        ).rejects.toMatchObject({
+            status: 400,
+            code: "VALIDATION_ERROR",
+            message: expect.stringContaining("标题必填"),
+        } satisfies Partial<AppError>);
+        expect(mockedCreateWithShortId).not.toHaveBeenCalled();
+    });
+
+    it("正文为空白时创建发布文章失败且错误文案非空", async () => {
+        const ctx = createMockAPIContext({
+            method: "POST",
+            url: "http://localhost:4321/api/v1/me/articles",
+            body: {
+                title: "标题",
+                body_markdown: "   ",
+            },
+        });
+        const access = createMemberAccess();
+
+        await expect(
+            handleMeArticles(ctx as unknown as APIContext, access, [
+                "articles",
+            ]),
+        ).rejects.toMatchObject({
+            status: 400,
+            code: "VALIDATION_ERROR",
+            message: expect.stringContaining("正文必填"),
+        } satisfies Partial<AppError>);
+        expect(mockedCreateWithShortId).not.toHaveBeenCalled();
     });
 });
 
@@ -336,6 +402,58 @@ describe("PUT /me/articles/working-draft", () => {
         expect(res.status).toBe(200);
         expect(mockedUpdateOne).toHaveBeenCalledTimes(1);
     });
+
+    it("清空工作草稿封面时 detach 旧封面", async () => {
+        mockedReadMany.mockResolvedValue([
+            mockArticle({
+                id: "draft-1",
+                short_id: "draft-1",
+                status: "draft",
+                title: "Draft",
+                body_markdown: "",
+                cover_file: "file-old",
+            }),
+        ]);
+        mockedUpdateOne.mockResolvedValue(
+            mockArticle({
+                id: "draft-1",
+                short_id: "draft-1",
+                status: "draft",
+                title: "Draft",
+                body_markdown: "",
+                cover_file: null,
+            }),
+        );
+
+        const ctx = createMockAPIContext({
+            method: "PUT",
+            url: "http://localhost:4321/api/v1/me/articles/working-draft",
+            body: {
+                title: "Draft",
+                body_markdown: "",
+                cover_file: null,
+                tags: [],
+            },
+        });
+        const access = createMemberAccess();
+
+        const res = await handleMeArticles(
+            ctx as unknown as APIContext,
+            access,
+            ["articles", "working-draft"],
+        );
+
+        expect(res.status).toBe(200);
+        expect(readLastArticleUpdatePayload()).toMatchObject({
+            cover_file: null,
+        });
+        expect(mockedSyncManagedFileBinding).toHaveBeenCalledWith(
+            expect.objectContaining({
+                previousFileValue: "file-old",
+                nextFileValue: null,
+            }),
+        );
+    });
 });
 
 // ── PATCH /me/articles/:id ──
@@ -441,6 +559,48 @@ describe("PATCH /me/articles/:id", () => {
 
         expect(res.status).toBe(200);
         expect(mockedUpdateOne).toHaveBeenCalledTimes(1);
+    });
+
+    it("清空文章封面时 detach 旧封面", async () => {
+        mockedReadMany.mockResolvedValue([
+            mockArticle({
+                id: "article-1",
+                author_id: "user-1",
+                short_id: "post-short",
+                cover_file: "file-old",
+            }),
+        ]);
+        mockedUpdateOne.mockResolvedValue(
+            mockArticle({
+                id: "article-1",
+                short_id: "post-short",
+                cover_file: null,
+            }),
+        );
+
+        const ctx = createMockAPIContext({
+            method: "PATCH",
+            url: "http://localhost:4321/api/v1/me/articles/article-1",
+            body: { cover_file: null },
+        });
+        const access = createMemberAccess();
+
+        const res = await handleMeArticles(
+            ctx as unknown as APIContext,
+            access,
+            ["articles", "article-1"],
+        );
+
+        expect(res.status).toBe(200);
+        expect(readLastArticleUpdatePayload()).toMatchObject({
+            cover_file: null,
+        });
+        expect(mockedSyncManagedFileBinding).toHaveBeenCalledWith(
+            expect.objectContaining({
+                previousFileValue: "file-old",
+                nextFileValue: null,
+            }),
+        );
     });
 });
 
@@ -705,7 +865,11 @@ describe("PATCH /me/articles/:id publish validation and file cleanup", () => {
                 "articles",
                 "draft-1",
             ]),
-        ).rejects.toThrow();
+        ).rejects.toMatchObject({
+            status: 400,
+            code: "VALIDATION_ERROR",
+            message: expect.any(String),
+        } satisfies Partial<AppError>);
     });
 
     it("正文纯文本 UUID 不会进入回收候选", async () => {
@@ -735,10 +899,10 @@ describe("PATCH /me/articles/:id publish validation and file cleanup", () => {
         );
 
         expect(res.status).toBe(200);
-        expect(mockedCleanupOwnedOrphanDirectusFiles).not.toHaveBeenCalled();
+        expect(mockedDeleteDirectusFile).not.toHaveBeenCalled();
     });
 
-    it("正文合法资源 URL 被移除时会进入回收候选", async () => {
+    it("正文合法资源 URL 被移除时不会同步触发物理清理", async () => {
         const fileId = "a1b2c3d4-e5f6-1234-9abc-def012345678";
         mockedReadMany.mockResolvedValue([
             mockArticle({
@@ -768,9 +932,6 @@ describe("PATCH /me/articles/:id publish validation and file cleanup", () => {
         );
 
         expect(res.status).toBe(200);
-        expect(mockedCleanupOwnedOrphanDirectusFiles).toHaveBeenCalledWith({
-            candidateFileIds: [fileId],
-            ownerUserIds: [access.user.id],
-        });
+        expect(mockedDeleteDirectusFile).not.toHaveBeenCalled();
     });
 });

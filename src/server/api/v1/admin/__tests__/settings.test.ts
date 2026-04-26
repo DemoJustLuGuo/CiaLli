@@ -7,9 +7,8 @@ import {
 } from "@/__tests__/helpers/mock-api-context";
 import { defaultSiteSettings } from "@/config";
 
-vi.mock("@/server/api/v1/shared", () => ({
+vi.mock("@/server/api/v1/shared/auth", () => ({
     requireAdmin: vi.fn(),
-    nowIso: vi.fn(() => "2026-02-17T00:00:00.000Z"),
 }));
 
 vi.mock("@/server/site-settings/service", () => ({
@@ -28,8 +27,34 @@ vi.mock("@/server/directus/client", () => ({
     updateOne: vi.fn(),
 }));
 
-vi.mock("@/server/api/v1/shared/file-cleanup", () => ({
-    cleanupOwnedOrphanDirectusFiles: vi.fn(),
+vi.mock("@/server/api/v1/shared/file-cleanup", async () => {
+    const actual =
+        await import("@/server/api/v1/shared/file-cleanup-reference-utils");
+    return {
+        extractDirectusFileIdsFromUnknown:
+            actual.extractDirectusFileIdsFromUnknown,
+        cleanupOwnedOrphanDirectusFiles: vi.fn(),
+    };
+});
+
+vi.mock("@/server/api/v1/me/_helpers", () => ({
+    deleteFileReferencesForOwner: vi.fn().mockResolvedValue(0),
+    detachManagedFiles: vi.fn().mockResolvedValue([]),
+    syncMarkdownFileLifecycle: vi.fn().mockResolvedValue({
+        attachedFileIds: [],
+        detachedFileIds: [],
+        nextFileIds: [],
+    }),
+}));
+
+vi.mock("@/server/files/resource-lifecycle", () => ({
+    resourceLifecycle: {
+        syncOwnerReferences: vi.fn().mockResolvedValue({
+            attachedFileIds: [],
+            detachedFileIds: [],
+            currentFileIds: [],
+        }),
+    },
 }));
 
 vi.mock("@/server/markdown/render", () => ({
@@ -43,15 +68,21 @@ vi.mock("@/server/cache/manager", () => ({
     },
 }));
 
-import { requireAdmin } from "@/server/api/v1/shared";
+import { requireAdmin } from "@/server/api/v1/shared/auth";
 import {
     getResolvedSiteSettings,
     invalidateSiteSettingsCache,
     resolveSiteSettingsPayload,
 } from "@/server/site-settings/service";
-import { createOne, readMany, updateOne } from "@/server/directus/client";
+import {
+    readMany,
+    updateDirectusFileMetadata,
+    updateOne,
+} from "@/server/directus/client";
 import { renderMarkdown } from "@/server/markdown/render";
 import { handleAdminSettings } from "@/server/api/v1/admin/settings";
+import { detachManagedFiles } from "@/server/api/v1/me/_helpers";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
 
 const mockedRequireAdmin = vi.mocked(requireAdmin);
 const mockedGetResolvedSiteSettings = vi.mocked(getResolvedSiteSettings);
@@ -59,10 +90,14 @@ const mockedInvalidateSiteSettingsCache = vi.mocked(
     invalidateSiteSettingsCache,
 );
 const mockedResolveSiteSettingsPayload = vi.mocked(resolveSiteSettingsPayload);
-const mockedCreateOne = vi.mocked(createOne);
 const mockedReadMany = vi.mocked(readMany);
 const mockedUpdateOne = vi.mocked(updateOne);
+const mockedUpdateDirectusFileMetadata = vi.mocked(updateDirectusFileMetadata);
 const mockedRenderMarkdown = vi.mocked(renderMarkdown);
+const mockedDetachManagedFiles = vi.mocked(detachManagedFiles);
+const mockedSyncOwnerReferences = vi.mocked(
+    resourceLifecycle.syncOwnerReferences,
+);
 
 function makeCtx(
     path: string,
@@ -80,6 +115,7 @@ function makeCtx(
 describe("handleAdminSettings /bulletin", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        delete process.env.PUBLIC_ASSET_BASE_URL;
         mockedRequireAdmin.mockResolvedValue({
             access: {
                 isAdmin: true,
@@ -476,6 +512,226 @@ describe("handleAdminSettings /site", () => {
     });
 });
 
+describe("handleAdminSettings /site wallpaper lifecycle", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockedRequireAdmin.mockResolvedValue({
+            access: {
+                isAdmin: true,
+                user: {
+                    id: "admin-1",
+                },
+            },
+            accessToken: "test-access-token",
+        } as never);
+    });
+
+    it("PATCH /admin/settings/site 删除最后一张首页壁纸时 detach 旧文件", async () => {
+        const oldWallpaperFileId = "a1b2c3d4-e5f6-1234-9abc-def012345678";
+        mockedGetResolvedSiteSettings.mockResolvedValue({
+            system: {
+                timeZone: "Asia/Shanghai",
+            },
+            settings: {
+                ...defaultSiteSettings,
+                banner: {
+                    ...defaultSiteSettings.banner,
+                    src: `/api/v1/assets/${oldWallpaperFileId}`,
+                },
+            },
+        } as never);
+        mockedResolveSiteSettingsPayload.mockReturnValue({
+            ...defaultSiteSettings,
+            banner: {
+                ...defaultSiteSettings.banner,
+                src: [],
+            },
+        } as never);
+        mockedReadMany.mockResolvedValue([
+            {
+                id: "row-1",
+                date_updated: "2026-02-15T12:00:00.000Z",
+                date_created: "2026-02-10T12:00:00.000Z",
+            },
+        ] as never);
+        mockedUpdateOne.mockResolvedValue({
+            date_updated: "2026-02-16T00:00:00.000Z",
+            date_created: "2026-02-10T12:00:00.000Z",
+        } as never);
+
+        const ctx = makeCtx("admin/settings/site", "PATCH", {
+            banner: {
+                src: [],
+            },
+        });
+        const response = await handleAdminSettings(
+            ctx as unknown as APIContext,
+            ["settings", "site"],
+        );
+
+        expect(response.status).toBe(200);
+        expect(mockedUpdateDirectusFileMetadata).not.toHaveBeenCalled();
+        expect(mockedSyncOwnerReferences).toHaveBeenCalledWith(
+            expect.objectContaining({
+                ownerCollection: "app_site_settings",
+                ownerId: "default",
+                references: [
+                    {
+                        ownerField: "settings",
+                        referenceKind: "settings_asset",
+                        fileIds: [],
+                    },
+                ],
+            }),
+        );
+        expect(mockedDetachManagedFiles).not.toHaveBeenCalledWith([
+            oldWallpaperFileId,
+        ]);
+    });
+
+    it("PATCH /admin/settings/site 保存新首页壁纸时识别私有资源路径并标记 attached", async () => {
+        const newWallpaperFileId = "f1e2d3c4-b5a6-4234-8abc-fedcba987654";
+        mockedGetResolvedSiteSettings.mockResolvedValue({
+            system: {
+                timeZone: "Asia/Shanghai",
+            },
+            settings: defaultSiteSettings,
+        } as never);
+        mockedResolveSiteSettingsPayload.mockReturnValue({
+            ...defaultSiteSettings,
+            banner: {
+                ...defaultSiteSettings.banner,
+                src: `/api/v1/assets/${newWallpaperFileId}`,
+            },
+        } as never);
+        mockedReadMany.mockResolvedValue([
+            {
+                id: "row-1",
+                date_updated: "2026-02-15T12:00:00.000Z",
+                date_created: "2026-02-10T12:00:00.000Z",
+            },
+        ] as never);
+        mockedUpdateOne.mockResolvedValue({
+            date_updated: "2026-02-16T00:00:00.000Z",
+            date_created: "2026-02-10T12:00:00.000Z",
+        } as never);
+
+        const ctx = makeCtx("admin/settings/site", "PATCH", {
+            banner: {
+                src: [newWallpaperFileId],
+            },
+        });
+        const response = await handleAdminSettings(
+            ctx as unknown as APIContext,
+            ["settings", "site"],
+        );
+
+        expect(response.status).toBe(200);
+        expect(mockedSyncOwnerReferences).toHaveBeenCalledWith(
+            expect.objectContaining({
+                ownerCollection: "app_site_settings",
+                ownerId: "default",
+                ownerUserId: "admin-1",
+                visibility: "public",
+                references: [
+                    {
+                        ownerField: "settings",
+                        referenceKind: "settings_asset",
+                        fileIds: [newWallpaperFileId],
+                    },
+                ],
+            }),
+        );
+        expect(mockedUpdateDirectusFileMetadata).not.toHaveBeenCalled();
+        expect(mockedDetachManagedFiles).not.toHaveBeenCalled();
+    });
+
+    it("PATCH /admin/settings/site 用共享提取器识别 settings 文件引用格式", async () => {
+        process.env.PUBLIC_ASSET_BASE_URL = "https://cdn.example.com/assets";
+        const oldFaviconFileId = "a1b2c3d4-e5f6-1234-9abc-def012345678";
+        const newFaviconFileId = "f1e2d3c4-b5a6-4234-8abc-fedcba987654";
+        const newBannerFileId = "11111111-2222-4333-8abc-444444444444";
+        const newIconFileId = "22222222-3333-4444-8abc-555555555555";
+        const newAvatarFileId = "33333333-4444-4555-8abc-666666666666";
+        mockedGetResolvedSiteSettings.mockResolvedValue({
+            system: {
+                timeZone: "Asia/Shanghai",
+            },
+            settings: {
+                ...defaultSiteSettings,
+                site: {
+                    ...defaultSiteSettings.site,
+                    favicon: [{ src: oldFaviconFileId }],
+                },
+            },
+        } as never);
+        mockedResolveSiteSettingsPayload.mockReturnValue({
+            ...defaultSiteSettings,
+            site: {
+                ...defaultSiteSettings.site,
+                favicon: [{ src: `/assets/${newFaviconFileId}` }],
+            },
+            banner: {
+                ...defaultSiteSettings.banner,
+                src: `https://cdn.example.com/assets/${newBannerFileId}`,
+            },
+            navbarTitle: {
+                ...defaultSiteSettings.navbarTitle,
+                icon: `/api/v1/public/assets/${newIconFileId}`,
+            },
+            profile: {
+                ...defaultSiteSettings.profile,
+                avatar: { id: newAvatarFileId },
+            },
+        } as never);
+        mockedReadMany.mockResolvedValue([
+            {
+                id: "row-1",
+                date_updated: "2026-02-15T12:00:00.000Z",
+                date_created: "2026-02-10T12:00:00.000Z",
+            },
+        ] as never);
+        mockedUpdateOne.mockResolvedValue({
+            date_updated: "2026-02-16T00:00:00.000Z",
+            date_created: "2026-02-10T12:00:00.000Z",
+        } as never);
+
+        const ctx = makeCtx("admin/settings/site", "PATCH", {
+            site: {
+                favicon: [{ src: `/assets/${newFaviconFileId}` }],
+            },
+        });
+        const response = await handleAdminSettings(
+            ctx as unknown as APIContext,
+            ["settings", "site"],
+        );
+
+        expect(response.status).toBe(200);
+        expect(mockedSyncOwnerReferences).toHaveBeenCalledWith(
+            expect.objectContaining({
+                ownerCollection: "app_site_settings",
+                ownerId: "default",
+                references: [
+                    {
+                        ownerField: "settings",
+                        referenceKind: "settings_asset",
+                        fileIds: [
+                            newFaviconFileId,
+                            newBannerFileId,
+                            newIconFileId,
+                            newAvatarFileId,
+                        ],
+                    },
+                ],
+            }),
+        );
+        expect(mockedUpdateDirectusFileMetadata).not.toHaveBeenCalled();
+        expect(mockedDetachManagedFiles).not.toHaveBeenCalledWith([
+            oldFaviconFileId,
+        ]);
+    });
+});
+
 describe("handleAdminSettings /site full payload", () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -708,115 +964,5 @@ describe("handleAdminSettings /site validation", () => {
         }>(response);
         expect(body.ok).toBe(false);
         expect(body.error.code).toBe("INVALID_TIME_ZONE");
-    });
-});
-
-describe("handleAdminSettings /about", () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-        mockedRequireAdmin.mockResolvedValue({
-            access: {
-                isAdmin: true,
-                user: {
-                    id: "admin-1",
-                },
-            },
-            accessToken: "test-access-token",
-        } as never);
-    });
-
-    it("GET /admin/settings/about 返回关于页配置", async () => {
-        mockedReadMany.mockResolvedValue([
-            {
-                id: "about-id",
-                title: "关于 CiaLli",
-                summary: "这里是摘要",
-                body_markdown: "# 关于内容",
-                date_updated: "2026-02-16T08:00:00.000Z",
-                date_created: "2026-02-15T08:00:00.000Z",
-            },
-        ] as never);
-
-        const ctx = makeCtx("admin/settings/about");
-        const response = await handleAdminSettings(
-            ctx as unknown as APIContext,
-            ["settings", "about"],
-        );
-        expect(response.status).toBe(200);
-
-        const body = await parseResponseJson<{
-            ok: boolean;
-            about: {
-                id: string;
-                title: string;
-                summary: string;
-                body_markdown: string;
-            };
-            updated_at: string;
-        }>(response);
-        expect(body.ok).toBe(true);
-        expect(body.about.id).toBe("about-id");
-        expect(body.about.title).toBe("关于 CiaLli");
-        expect(body.about.body_markdown).toBe("# 关于内容");
-        expect(body.updated_at).toBe("2026-02-16T08:00:00.000Z");
-    });
-
-    it("PATCH /admin/settings/about 不存在则创建", async () => {
-        mockedReadMany.mockResolvedValue([] as never);
-        mockedCreateOne.mockResolvedValue({
-            id: "about-id",
-            title: "关于我们",
-            summary: "摘要",
-            body_markdown: "# 内容",
-            date_updated: "2026-02-17T00:00:00.000Z",
-            date_created: "2026-02-17T00:00:00.000Z",
-        } as never);
-
-        const ctx = makeCtx("admin/settings/about", "PATCH", {
-            title: "关于我们",
-            summary: "摘要",
-            body_markdown: "# 内容",
-        });
-        const response = await handleAdminSettings(
-            ctx as unknown as APIContext,
-            ["settings", "about"],
-        );
-        expect(response.status).toBe(200);
-        expect(mockedCreateOne).toHaveBeenCalledTimes(1);
-        expect(mockedUpdateOne).not.toHaveBeenCalled();
-
-        const body = await parseResponseJson<{
-            ok: boolean;
-            about: {
-                id: string;
-                title: string;
-                summary: string;
-                body_markdown: string;
-            };
-        }>(response);
-        expect(body.ok).toBe(true);
-        expect(body.about.id).toBe("about-id");
-        expect(body.about.body_markdown).toBe("# 内容");
-    });
-
-    it("POST /admin/settings/about/preview 渲染 Markdown 预览", async () => {
-        mockedRenderMarkdown.mockResolvedValue("<h1>关于内容</h1>");
-        const ctx = makeCtx("admin/settings/about/preview", "POST", {
-            body_markdown: "# 关于内容",
-        });
-        const response = await handleAdminSettings(
-            ctx as unknown as APIContext,
-            ["settings", "about", "preview"],
-        );
-        expect(response.status).toBe(200);
-
-        const body = await parseResponseJson<{
-            ok: boolean;
-            body_markdown: string;
-            body_html: string;
-        }>(response);
-        expect(body.ok).toBe(true);
-        expect(body.body_markdown).toBe("# 关于内容");
-        expect(body.body_html).toBe("<h1>关于内容</h1>");
     });
 });

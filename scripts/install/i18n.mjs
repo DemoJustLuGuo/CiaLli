@@ -37,7 +37,8 @@ const MESSAGES = {
             "Select installer language [1-4 or code] (1. English / 2. 简体中文 / 3. 繁體中文 / 4. 日本語): ",
         selectLanguageRetry:
             "Invalid language choice. Enter 1-4 or one of: {supported}.",
-        promptSiteUrl: "Public site URL (for example https://example.com): ",
+        promptSiteUrl:
+            "Public site root URL (for example https://example.com): ",
         unsupportedPlatform:
             "Unsupported host platform: {platform}. Only Linux / macOS / WSL are supported.",
         resetCleanup:
@@ -47,10 +48,16 @@ const MESSAGES = {
             "[install] Starting infrastructure, seed restore jobs, and Directus.",
         provisionStorage:
             "[install] Provisioning the MinIO service account used by Directus storage.",
+        applySchema:
+            "[install] Applying the repository Directus schema snapshot.",
         createRole: "[install] Creating Directus administrator role.",
         createAdminUser: "[install] Creating Directus administrator user.",
+        resetAdminPassword:
+            "[install] Resetting the existing Directus administrator password.",
+        repairAccessPolicies:
+            "[install] Repairing Directus access policies for the app runtime.",
         generateStaticToken:
-            "[install] Logging into Directus and generating server static token.",
+            "[install] Logging into Directus and provisioning web / worker service tokens.",
         updateSiteLanguage:
             "[install] Writing the selected site default language into Directus.",
         startApp: "[install] Starting web / worker / proxy.",
@@ -61,7 +68,8 @@ const MESSAGES = {
             "[install] All generated values are shown above and persisted in .env for later review or backup.",
         siteEntry: "[install] Site entry: {url}",
         directusEntry: "[install] Directus: {url}",
-        unsupportedSiteUrl: "The site URL is invalid: {siteUrl}",
+        unsupportedSiteUrl:
+            "The site URL is invalid. Use an http(s) root URL without path, query, or hash: {siteUrl}",
         siteUrlRequired:
             "The installer requires the public site URL. Provide it interactively or via --site-url.",
         projectRootNotFound:
@@ -81,7 +89,7 @@ const MESSAGES = {
             "Failed to read administrator account information: HTTP {status}",
         directusAdminUserIdMissing: "Directus administrator user ID is empty.",
         directusStaticTokenPersistFailed:
-            "Failed to persist Directus static token: HTTP {status}",
+            "Failed to provision Directus service credentials: HTTP {status}",
         waitForHealthTimeout:
             "Timed out while waiting for service health check: {url}",
         siteLanguageReadFailed:
@@ -111,7 +119,7 @@ const MESSAGES = {
             "请选择安装器语言 [1-4 或语言代码]（1. English / 2. 简体中文 / 3. 繁體中文 / 4. 日本語）：",
         selectLanguageRetry:
             "语言选择无效，请输入 1-4 或以下语言代码之一：{supported}。",
-        promptSiteUrl: "站点公开 URL（例如 https://example.com）：",
+        promptSiteUrl: "站点公开根 URL（例如 https://example.com）：",
         unsupportedPlatform:
             "当前宿主机不受支持：{platform}。仅支持 Linux / macOS / WSL。",
         resetCleanup: "[install] 检测到 --reset，正在清理现有 Compose 资源。",
@@ -119,9 +127,14 @@ const MESSAGES = {
         startInfra: "[install] 启动基础设施、seed 恢复与 Directus。",
         provisionStorage:
             "[install] 为 Directus 存储创建 MinIO service account。",
+        applySchema: "[install] 应用仓库中的 Directus schema 快照。",
         createRole: "[install] 创建 Directus 管理员角色。",
         createAdminUser: "[install] 创建 Directus 管理员账户。",
-        generateStaticToken: "[install] 登录 Directus 并生成服务端静态 token。",
+        resetAdminPassword: "[install] 重置已存在的 Directus 管理员密码。",
+        repairAccessPolicies:
+            "[install] 修复应用运行所需的 Directus 访问策略。",
+        generateStaticToken:
+            "[install] 登录 Directus 并为 web / worker 创建服务端静态 token。",
         updateSiteLanguage:
             "[install] 将所选站点默认语言写入 Directus 站点设置。",
         startApp: "[install] 启动 web / worker / proxy。",
@@ -132,7 +145,8 @@ const MESSAGES = {
             "[install] 上述所有生成值均已写入 .env，后续可直接在 .env 中查看或备份。",
         siteEntry: "[install] 主站入口：{url}",
         directusEntry: "[install] Directus：{url}",
-        unsupportedSiteUrl: "站点 URL 非法：{siteUrl}",
+        unsupportedSiteUrl:
+            "站点 URL 非法：请使用不带 path / query / hash 的 http(s) 根 URL：{siteUrl}",
         siteUrlRequired:
             "安装器需要站点公开 URL。可交互输入，也可通过 --site-url 提供。",
         projectRootNotFound:
@@ -149,7 +163,7 @@ const MESSAGES = {
         directusReadAdminFailed: "读取管理员信息失败：HTTP {status}",
         directusAdminUserIdMissing: "Directus 管理员用户 ID 为空。",
         directusStaticTokenPersistFailed:
-            "写入 Directus 静态 token 失败：HTTP {status}",
+            "创建 Directus 服务凭据失败：HTTP {status}",
         waitForHealthTimeout: "等待服务健康检查超时：{url}",
         siteLanguageReadFailed:
             "写入所选站点语言前，读取当前站点设置失败：HTTP {status}",
@@ -177,7 +191,7 @@ const MESSAGES = {
             "請選擇安裝器語言 [1-4 或語言代碼]（1. English / 2. 简体中文 / 3. 繁體中文 / 4. 日本語）：",
         selectLanguageRetry:
             "語言選擇無效，請輸入 1-4 或以下語言代碼之一：{supported}。",
-        promptSiteUrl: "站點公開 URL（例如 https://example.com）：",
+        promptSiteUrl: "站點公開根 URL（例如 https://example.com）：",
         unsupportedPlatform:
             "目前宿主機不受支援：{platform}。僅支援 Linux / macOS / WSL。",
         resetCleanup: "[install] 偵測到 --reset，正在清理既有 Compose 資源。",
@@ -185,10 +199,14 @@ const MESSAGES = {
         startInfra: "[install] 啟動基礎設施、seed 還原與 Directus。",
         provisionStorage:
             "[install] 為 Directus 儲存建立 MinIO service account。",
+        applySchema: "[install] 套用倉庫中的 Directus schema 快照。",
         createRole: "[install] 建立 Directus 管理員角色。",
         createAdminUser: "[install] 建立 Directus 管理員帳號。",
+        resetAdminPassword: "[install] 重設既有 Directus 管理員密碼。",
+        repairAccessPolicies:
+            "[install] 修復應用執行所需的 Directus 存取策略。",
         generateStaticToken:
-            "[install] 登入 Directus 並產生伺服器端靜態 token。",
+            "[install] 登入 Directus 並為 web / worker 建立伺服器端靜態 token。",
         updateSiteLanguage:
             "[install] 將所選站點預設語言寫入 Directus 站點設定。",
         startApp: "[install] 啟動 web / worker / proxy。",
@@ -199,7 +217,8 @@ const MESSAGES = {
             "[install] 上述所有產生值均已寫入 .env，後續可直接在 .env 中檢視或備份。",
         siteEntry: "[install] 主站入口：{url}",
         directusEntry: "[install] Directus：{url}",
-        unsupportedSiteUrl: "站點 URL 非法：{siteUrl}",
+        unsupportedSiteUrl:
+            "站點 URL 非法：請使用不帶 path / query / hash 的 http(s) 根 URL：{siteUrl}",
         siteUrlRequired:
             "安裝器需要站點公開 URL。可互動輸入，也可透過 --site-url 提供。",
         projectRootNotFound:
@@ -216,7 +235,7 @@ const MESSAGES = {
         directusReadAdminFailed: "讀取管理員資訊失敗：HTTP {status}",
         directusAdminUserIdMissing: "Directus 管理員使用者 ID 為空。",
         directusStaticTokenPersistFailed:
-            "寫入 Directus 靜態 token 失敗：HTTP {status}",
+            "建立 Directus 服務憑證失敗：HTTP {status}",
         waitForHealthTimeout: "等待服務健康檢查逾時：{url}",
         siteLanguageReadFailed:
             "寫入所選站點語言前，讀取目前站點設定失敗：HTTP {status}",
@@ -245,7 +264,7 @@ const MESSAGES = {
         selectLanguageRetry:
             "言語の選択が無効です。1-4 または次の言語コードを入力してください: {supported}。",
         promptSiteUrl:
-            "公開サイト URL を入力してください（例 https://example.com）: ",
+            "公開サイトのルート URL を入力してください（例 https://example.com）: ",
         unsupportedPlatform:
             "現在のホストプラットフォームは未対応です: {platform}。Linux / macOS / WSL のみ対応しています。",
         resetCleanup:
@@ -255,10 +274,16 @@ const MESSAGES = {
             "[install] 基盤サービス、seed 復元ジョブ、Directus を起動します。",
         provisionStorage:
             "[install] Directus ストレージ用の MinIO service account を作成します。",
+        applySchema:
+            "[install] リポジトリの Directus schema snapshot を適用します。",
         createRole: "[install] Directus 管理者ロールを作成します。",
         createAdminUser: "[install] Directus 管理者ユーザーを作成します。",
+        resetAdminPassword:
+            "[install] 既存の Directus 管理者パスワードを再設定します。",
+        repairAccessPolicies:
+            "[install] アプリ実行に必要な Directus アクセスポリシーを修復します。",
         generateStaticToken:
-            "[install] Directus にログインし、サーバー静的 token を生成します。",
+            "[install] Directus にログインし、web / worker 用のサービス token を作成します。",
         updateSiteLanguage:
             "[install] 選択したサイト既定言語を Directus に保存します。",
         startApp: "[install] web / worker / proxy を起動します。",
@@ -269,7 +294,8 @@ const MESSAGES = {
             "[install] 上記の生成値はすべて .env に保存されています。後から .env で確認・バックアップできます。",
         siteEntry: "[install] サイト入口: {url}",
         directusEntry: "[install] Directus: {url}",
-        unsupportedSiteUrl: "サイト URL が不正です: {siteUrl}",
+        unsupportedSiteUrl:
+            "サイト URL が不正です。path / query / hash を含まない http(s) のルート URL を指定してください: {siteUrl}",
         siteUrlRequired:
             "インストーラーには公開サイト URL が必要です。対話入力または --site-url で指定してください。",
         projectRootNotFound:
@@ -289,7 +315,7 @@ const MESSAGES = {
             "管理者情報の取得に失敗しました: HTTP {status}",
         directusAdminUserIdMissing: "Directus 管理者ユーザー ID が空です。",
         directusStaticTokenPersistFailed:
-            "Directus 静的 token の保存に失敗しました: HTTP {status}",
+            "Directus サービス資格情報の作成に失敗しました: HTTP {status}",
         waitForHealthTimeout:
             "サービスのヘルスチェック待機がタイムアウトしました: {url}",
         siteLanguageReadFailed:

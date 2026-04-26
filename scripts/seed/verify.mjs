@@ -28,15 +28,34 @@ async function assertFileExists(filePath, label) {
     }
 }
 
-async function assertDirectoryExists(dirPath, label) {
+async function statIfExists(targetPath) {
     try {
-        const stat = await fs.stat(dirPath);
-        if (!stat.isDirectory()) {
-            throw new Error(`${label} 不是目录: ${dirPath}`);
-        }
+        return await fs.stat(targetPath);
     } catch (error) {
-        throw new Error(`${label} 不存在: ${dirPath}`, { cause: error });
+        if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ENOENT"
+        ) {
+            return null;
+        }
+        throw error;
     }
+}
+
+async function resolveMinioSeedFiles(metadata) {
+    const minioSeedStat = await statIfExists(SEED_MINIO_DIR);
+    if (!minioSeedStat) {
+        if (metadata?.minio?.objectCount === 0) {
+            return [];
+        }
+        throw new Error(`MinIO seed 目录不存在: ${SEED_MINIO_DIR}`);
+    }
+    if (!minioSeedStat.isDirectory()) {
+        throw new Error(`MinIO seed 目录不是目录: ${SEED_MINIO_DIR}`);
+    }
+    return await listFilesRecursive(SEED_MINIO_DIR);
 }
 
 function createVerifyContainerName() {
@@ -67,6 +86,42 @@ async function waitForPostgresReady(containerName, retries = 30) {
             await sleep(1000);
         }
     }
+}
+
+async function waitForDatabaseCreated(
+    containerName,
+    postgresPassword,
+    databaseName,
+    retries = 30,
+) {
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+        try {
+            const exists = runDocker([
+                "exec",
+                "-e",
+                `PGPASSWORD=${postgresPassword}`,
+                containerName,
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-At",
+                "-c",
+                `select 1 from pg_database where datname = '${databaseName.replace(/'/g, "''")}';`,
+            ]).trim();
+            if (exists === "1") {
+                return;
+            }
+        } catch (error) {
+            if (attempt === retries - 1) {
+                throw error;
+            }
+        }
+        await sleep(1000);
+    }
+
+    throw new Error(`等待数据库创建超时: ${databaseName}`);
 }
 
 async function queryRestoredDatabase(containerName, postgresPassword, sql) {
@@ -112,14 +167,30 @@ async function verifyRestoredSeedDatabase() {
             containerName,
             "-e",
             `POSTGRES_PASSWORD=${postgresPassword}`,
-            "-e",
-            "POSTGRES_DB=directus",
             "-v",
             `${seedPostgresDir}:/seed/postgres:ro`,
             "postgis/postgis:18-3.6",
         ]);
 
         await waitForPostgresReady(containerName);
+        runDocker([
+            "exec",
+            "-e",
+            `PGPASSWORD=${postgresPassword}`,
+            containerName,
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-c",
+            "create database directus template template0;",
+        ]);
+        await waitForDatabaseCreated(
+            containerName,
+            postgresPassword,
+            "directus",
+        );
 
         runDocker([
             "exec",
@@ -147,6 +218,18 @@ async function verifyRestoredSeedDatabase() {
         if (demoAdminCount !== "0") {
             throw new Error(
                 `seed dump 仍包含 legacy demo admin: ${LEGACY_DEMO_ADMIN_EMAIL}`,
+            );
+        }
+
+        const suspendedSeedAdminCount = await queryRestoredDatabase(
+            containerName,
+            postgresPassword,
+            "select count(*) from directus_users where status = 'suspended' and email like 'disabled+%@seed.invalid';",
+        );
+
+        if (suspendedSeedAdminCount !== "0") {
+            throw new Error(
+                `seed dump 仍包含 suspended seed admin placeholder: ${suspendedSeedAdminCount}`,
             );
         }
 
@@ -189,7 +272,6 @@ async function main() {
     await assertFileExists(SEED_POSTGRES_DUMP_PATH, "PostgreSQL seed dump");
     await assertFileExists(SEED_METADATA_PATH, "seed 元数据");
     await assertFileExists(DIRECTUS_SCHEMA_PATH, "Directus schema 快照");
-    await assertDirectoryExists(SEED_MINIO_DIR, "MinIO seed 目录");
 
     if (await isGitLfsPointerFile(SEED_POSTGRES_DUMP_PATH)) {
         throw new Error(
@@ -210,7 +292,7 @@ async function main() {
     const metadataRaw = await fs.readFile(SEED_METADATA_PATH, "utf8");
     const metadata = JSON.parse(metadataRaw);
 
-    const minioFiles = await listFilesRecursive(SEED_MINIO_DIR);
+    const minioFiles = await resolveMinioSeedFiles(metadata);
     for (const filePath of minioFiles) {
         if (await isGitLfsPointerFile(filePath)) {
             throw new Error(

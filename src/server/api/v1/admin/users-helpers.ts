@@ -9,6 +9,7 @@ import {
 const USER_DELETE_NULLIFY_REFERENCES: Array<{
     collection: string;
     field: string;
+    optional?: boolean;
 }> = [
     { collection: "directus_notifications", field: "sender" },
     { collection: "directus_versions", field: "user_updated" },
@@ -19,13 +20,41 @@ const USER_DELETE_NULLIFY_REFERENCES: Array<{
     { collection: "app_site_announcements", field: "user_updated" },
     { collection: "app_diary_likes", field: "user_created" },
     { collection: "app_diary_likes", field: "user_updated" },
-    { collection: "ai_prompts", field: "user_created" },
-    { collection: "ai_prompts", field: "user_updated" },
+    { collection: "ai_prompts", field: "user_created", optional: true },
+    { collection: "ai_prompts", field: "user_updated", optional: true },
 ];
+
+function isIgnorableCollectionAccessError(
+    error: unknown,
+    collection: string,
+    optional: boolean,
+): boolean {
+    const message = String(error);
+    if (
+        message.includes("COLLECTION_NOT_FOUND") ||
+        message.includes("ITEM_NOT_FOUND") ||
+        message.includes("404")
+    ) {
+        return true;
+    }
+    if (!optional) {
+        return false;
+    }
+    const isForbidden =
+        message.includes("DIRECTUS_FORBIDDEN") ||
+        message.includes("FORBIDDEN") ||
+        message.includes("403");
+    const referencesCollection =
+        message.includes(`collection "${collection}"`) ||
+        message.includes(`collection '${collection}'`) ||
+        message.includes(collection);
+    return isForbidden && referencesCollection;
+}
 
 async function nullifyUserReferenceField(
     collection: string,
     field: string,
+    optional: boolean,
     userId: string,
 ): Promise<void> {
     try {
@@ -35,12 +64,13 @@ async function nullifyUserReferenceField(
             data: { [field]: null } as JsonObject,
         });
     } catch (error) {
-        const message = String(error);
-        if (
-            message.includes("COLLECTION_NOT_FOUND") ||
-            message.includes("ITEM_NOT_FOUND") ||
-            message.includes("404")
-        ) {
+        if (isIgnorableCollectionAccessError(error, collection, optional)) {
+            if (optional) {
+                console.warn(
+                    "[admin/users] skip optional user reference cleanup",
+                    { collection, field, error: String(error) },
+                );
+            }
             return;
         }
         throw error;
@@ -54,6 +84,7 @@ export async function clearBlockingUserReferences(
         await nullifyUserReferenceField(
             target.collection,
             target.field,
+            Boolean(target.optional),
             userId,
         );
     }
@@ -63,6 +94,7 @@ type ReferencedFile = {
     id: string;
     uploaded_by?: unknown;
     modified_by?: unknown;
+    app_owner_user_id?: unknown;
 };
 
 export async function nullifyReferencedFileOwnership(
@@ -70,12 +102,19 @@ export async function nullifyReferencedFileOwnership(
     userId: string,
 ): Promise<void> {
     for (const file of referencedFiles) {
-        const payload: { uploaded_by?: null; modified_by?: null } = {};
+        const payload: {
+            uploaded_by?: null;
+            modified_by?: null;
+            app_owner_user_id?: null;
+        } = {};
         if (String(file.uploaded_by || "").trim() === userId) {
             payload.uploaded_by = null;
         }
         if (String(file.modified_by || "").trim() === userId) {
             payload.modified_by = null;
+        }
+        if (String(file.app_owner_user_id || "").trim() === userId) {
+            payload.app_owner_user_id = null;
         }
         if (Object.keys(payload).length === 0) {
             continue;

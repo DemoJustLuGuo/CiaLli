@@ -4,7 +4,8 @@ import type { AppUser } from "@/types/app";
 export const DIRECTUS_ROLE_NAME = {
     member: "Member",
     siteAdmin: "Site Admin",
-    administrator: "Administrator",
+    administrator: "CiaLli Administrator",
+    legacyAdministrator: "Administrator",
 } as const;
 
 export const DIRECTUS_POLICY_NAME = {
@@ -62,11 +63,17 @@ export function extractDirectusPolicyIds(
                 return entry.trim();
             }
             if (entry && typeof entry === "object") {
-                return (
-                    String(
-                        (entry as { policy?: unknown }).policy ?? "",
-                    ).trim() || String(entry.id ?? "").trim()
-                );
+                const policy = entry.policy;
+                if (typeof policy === "string") {
+                    return policy.trim() || String(entry.id ?? "").trim();
+                }
+                if (policy && typeof policy === "object") {
+                    const policyId = String(policy.id ?? "").trim();
+                    if (policyId) {
+                        return policyId;
+                    }
+                }
+                return String(entry.id ?? "").trim();
             }
             return "";
         })
@@ -86,7 +93,11 @@ export function resolveAppRole(params: {
     roleName?: string | null;
     isPlatformAdmin: boolean;
 }): AppRole {
-    if (params.isPlatformAdmin || isSiteAdminRoleName(params.roleName)) {
+    if (
+        params.isPlatformAdmin ||
+        isPlatformAdministratorRoleName(params.roleName) ||
+        isSiteAdminRoleName(params.roleName)
+    ) {
         return "admin";
     }
     return "member";
@@ -95,7 +106,11 @@ export function resolveAppRole(params: {
 export function isPlatformAdministratorRoleName(
     roleName: string | null | undefined,
 ): boolean {
-    return String(roleName || "").trim() === DIRECTUS_ROLE_NAME.administrator;
+    const normalizedRoleName = String(roleName || "").trim();
+    return (
+        normalizedRoleName === DIRECTUS_ROLE_NAME.administrator ||
+        normalizedRoleName === DIRECTUS_ROLE_NAME.legacyAdministrator
+    );
 }
 
 export function buildPermissionsFromDirectus(params: {

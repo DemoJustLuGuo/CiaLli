@@ -9,6 +9,7 @@ import {
     renderMarkdown,
     type MarkdownRenderMode,
 } from "@/server/markdown/render";
+import { AppError } from "@/server/api/errors";
 import { fail, ok } from "@/server/api/response";
 import { parseJsonBody } from "@/server/api/utils";
 import { validateBody } from "@/server/api/validate";
@@ -22,14 +23,12 @@ import {
     readComments,
     readViewerCommentLikes,
 } from "@/server/repositories/comments/comments.repository";
+import { withServiceRepositoryContext } from "@/server/repositories/directus/scope";
 
-import { buildCommentTree, requireAccess } from "./shared";
-import type { CommentRecord, CommentTreeNode } from "./shared";
+import { requireAccess } from "./shared/auth";
+import { buildCommentTree } from "./shared/comments";
+import type { CommentRecord, CommentTreeNode } from "./shared/types";
 import { getAuthorBundle } from "./shared/author-cache";
-import {
-    cleanupOwnedOrphanDirectusFiles,
-    extractDirectusAssetIdsFromMarkdown,
-} from "./shared/file-cleanup";
 
 export type { CommentRecord, CommentTreeNode };
 
@@ -330,32 +329,55 @@ export async function renderCommentItem<T extends Record<string, unknown>>(
     };
 }
 
+function missingParentResponse(): Response {
+    return fail("父评论不存在", 404, "COMMENT_PARENT_NOT_FOUND");
+}
+
+function shouldHideParentLookupError(error: unknown): boolean {
+    if (!(error instanceof AppError)) {
+        return false;
+    }
+    if (!error.code.startsWith("DIRECTUS_")) {
+        return false;
+    }
+    return error.status === 403 || error.status === 404;
+}
+
 export async function validateReplyParent(
     collection: CommentCollection,
     parentId: string,
     entityId: string,
     relationKey: "article_id" | "diary_id",
 ): Promise<Response | null> {
-    const parent = await readCommentById(collection, parentId);
-    const relationValue = String(
-        (parent as Record<string, unknown> | null)?.[relationKey] || "",
-    );
-    if (!parent || relationValue !== entityId) {
-        return fail("父评论不存在", 404);
-    }
+    try {
+        return await withServiceRepositoryContext(async () => {
+            const parent = await readCommentById(collection, parentId);
+            const relationValue = String(
+                (parent as Record<string, unknown> | null)?.[relationKey] || "",
+            );
+            if (!parent || relationValue !== entityId) {
+                return missingParentResponse();
+            }
 
-    const parentDepth = await resolveCommentDepth(
-        collection,
-        String(parent.id),
-    );
-    if (parentDepth === null) {
-        return fail("父评论不存在", 404);
-    }
-    if (!canCreateReplyAtDepth(parentDepth)) {
-        return fail("最多支持三级回复", 400);
-    }
+            const parentDepth = await resolveCommentDepth(
+                collection,
+                String(parent.id),
+            );
+            if (parentDepth === null) {
+                return missingParentResponse();
+            }
+            if (!canCreateReplyAtDepth(parentDepth)) {
+                return fail("最多支持三级回复", 400, "COMMENT_DEPTH_EXCEEDED");
+            }
 
-    return null;
+            return null;
+        });
+    } catch (error) {
+        if (shouldHideParentLookupError(error)) {
+            return missingParentResponse();
+        }
+        throw error;
+    }
 }
 
 async function collectDescendantCommentIds(
@@ -402,49 +424,50 @@ async function collectDescendantCommentIds(
 export async function deleteCommentWithDescendants(
     collection: CommentCollection,
     commentId: string,
-): Promise<void> {
-    const descendants = await collectDescendantCommentIds(
-        collection,
-        commentId,
-    );
+): Promise<Array<{ id: string; body?: unknown; author_id?: unknown }>> {
+    const targets = await collectCommentDeletionTargets(collection, commentId);
+    await deleteCollectedCommentTargets(collection, commentId, targets);
+    return targets;
+}
+
+export async function collectCommentDeletionTargets(
+    collection: CommentCollection,
+    commentId: string,
+): Promise<Array<{ id: string; body?: unknown; author_id?: unknown }>> {
     const rootComment = await readCommentById(collection, commentId, [
         "id",
         "body",
         "author_id",
     ]);
-    const candidateFileIds = new Set<string>();
-    const ownerUserIds = new Set<string>();
-    if (rootComment) {
-        const rootAuthorId = String(rootComment.author_id ?? "").trim();
-        if (rootAuthorId) {
-            ownerUserIds.add(rootAuthorId);
-        }
-        for (const fileId of extractDirectusAssetIdsFromMarkdown(
-            String(rootComment.body ?? ""),
-        )) {
-            candidateFileIds.add(fileId);
-        }
-    }
-    for (const descendant of descendants) {
-        const ownerUserId = String(descendant.author_id ?? "").trim();
-        if (ownerUserId) {
-            ownerUserIds.add(ownerUserId);
-        }
-        for (const fileId of extractDirectusAssetIdsFromMarkdown(
-            String(descendant.body ?? ""),
-        )) {
-            candidateFileIds.add(fileId);
-        }
-    }
+    const descendants = await collectDescendantCommentIds(
+        collection,
+        commentId,
+    );
+    return rootComment
+        ? [
+              ...descendants,
+              {
+                  id: String(rootComment.id || commentId),
+                  body: rootComment.body,
+                  author_id: rootComment.author_id,
+              },
+          ]
+        : descendants;
+}
 
-    for (const descendant of descendants.reverse()) {
-        await deleteCommentById(collection, descendant.id);
+export async function deleteCollectedCommentTargets(
+    collection: CommentCollection,
+    commentId: string,
+    targets: Array<{ id: string }>,
+): Promise<void> {
+    const rootId = String(commentId || "").trim();
+    const descendantIds = targets
+        .map((target) => String(target.id || "").trim())
+        .filter((id) => id && id !== rootId);
+    for (const descendantId of descendantIds.reverse()) {
+        await deleteCommentById(collection, descendantId);
     }
     await deleteCommentById(collection, commentId);
-    await cleanupOwnedOrphanDirectusFiles({
-        candidateFileIds: [...candidateFileIds],
-        ownerUserIds: [...ownerUserIds],
-    });
 }
 
 export async function handleCommentPreview(

@@ -24,6 +24,10 @@ import { validateBody } from "@/server/api/validate";
 import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import {
+    normalizeAlbumCoverUrl,
+    normalizeAlbumPhotoImageUrl,
+} from "@/server/application/albums/external-image-fields";
+import {
     countItems,
     createOne,
     deleteOne,
@@ -34,23 +38,19 @@ import {
 import {
     createWithShortId,
     isUniqueConstraintError,
+    isUuid,
 } from "@/server/utils/short-id";
-import type { AppAccess } from "@/server/api/v1/shared";
-import {
-    hasOwn,
-    parseRouteId,
-    safeCsv,
-    sanitizeSlug,
-} from "@/server/api/v1/shared";
-import {
-    cleanupOwnedOrphanDirectusFiles,
-    collectAlbumFileIds,
-    normalizeDirectusFileId,
-} from "@/server/api/v1/shared/file-cleanup";
+import type { AppAccess } from "@/server/api/v1/shared/types";
+import { hasOwn, safeCsv, sanitizeSlug } from "@/server/api/v1/shared/helpers";
+import { parseRouteId } from "@/server/api/v1/shared/parse";
+import { normalizeDirectusFileId } from "@/server/api/v1/shared/file-cleanup";
 import {
     bindFileOwnerToUser,
     isSlugUniqueConflict,
+    syncManagedFileBinding,
 } from "@/server/api/v1/me/_helpers";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
+import { searchIndex } from "@/server/application/shared/search-index";
 
 async function handleAlbumsGet(
     context: APIContext,
@@ -66,11 +66,34 @@ async function handleAlbumsGet(
         offset,
     });
     return ok({
-        items: rows.map((row) => ({ ...row, tags: safeCsv(row.tags) })),
+        items: rows.map((row) =>
+            normalizeAlbumCoverUrl({ ...row, tags: safeCsv(row.tags) }),
+        ),
         page,
         limit,
         total: rows.length,
     });
+}
+
+type ParsedAlbumRouteId = { id: string } | { response: Response };
+
+function parseAlbumRouteId(input: string | undefined): ParsedAlbumRouteId {
+    const id = parseRouteId(input);
+    if (!id) {
+        return { response: fail("缺少相册 ID", 400, "ALBUM_ID_MISSING") };
+    }
+    if (!isUuid(id)) {
+        return { response: fail("非法相册 ID", 400, "ALBUM_ID_INVALID") };
+    }
+    return { id };
+}
+
+async function loadVisibleAlbumById(id: string): Promise<AppAlbum | null> {
+    const rows = await readMany("app_albums", {
+        filter: { id: { _eq: id } } as JsonObject,
+        limit: 1,
+    });
+    return rows[0] ?? null;
 }
 
 async function createAlbumWithSlugRetry(
@@ -112,6 +135,12 @@ async function createAlbumWithSlugRetry(
             userId,
             undefined,
             created.is_public ? "public" : "private",
+            {
+                ownerCollection: "app_albums",
+                ownerId: created.id,
+                ownerField: "cover_file",
+                referenceKind: "structured_field",
+            },
         );
     }
     return created!;
@@ -161,7 +190,12 @@ async function handleAlbumsPost(
         [cacheManager.invalidateByDomain("album-list")],
         { label: "me/albums#create" },
     );
-    return ok({ item: { ...created, tags: safeCsv(created?.tags) } });
+    return ok({
+        item: normalizeAlbumCoverUrl({
+            ...created,
+            tags: safeCsv(created?.tags),
+        }),
+    });
 }
 
 async function handleAlbumGet(id: string, target: AppAlbum): Promise<Response> {
@@ -173,9 +207,9 @@ async function handleAlbumGet(id: string, target: AppAlbum): Promise<Response> {
         limit: 200,
     });
     return ok({
-        item: { ...target, tags: safeCsv(target.tags) },
+        item: normalizeAlbumCoverUrl({ ...target, tags: safeCsv(target.tags) }),
         photos: photos.map((photo) => ({
-            ...photo,
+            ...normalizeAlbumPhotoImageUrl(photo),
             tags: safeCsv(photo.tags),
         })),
     });
@@ -291,7 +325,12 @@ async function handleAlbumPatch(
         ],
         { label: "me/albums#patch" },
     );
-    return ok({ item: { ...updated, tags: safeCsv(updated.tags) } });
+    return ok({
+        item: normalizeAlbumCoverUrl({
+            ...updated,
+            tags: safeCsv(updated.tags),
+        }),
+    });
 }
 
 async function syncAlbumCoverVisibility(params: {
@@ -304,22 +343,18 @@ async function syncAlbumCoverVisibility(params: {
     input: AlbumInput;
     albumId: string;
 }): Promise<void> {
-    if (hasOwn(params.body, "cover_file") && params.nextCoverFile) {
-        await bindFileOwnerToUser(
-            params.nextCoverFile,
-            params.access.user.id,
-            undefined,
-            params.updatedIsPublic ? "public" : "private",
-        );
-    }
-    if (
-        hasOwn(params.body, "cover_file") &&
-        params.prevCoverFile &&
-        params.prevCoverFile !== params.nextCoverFile
-    ) {
-        await cleanupOwnedOrphanDirectusFiles({
-            candidateFileIds: [params.prevCoverFile],
-            ownerUserIds: [params.target.author_id],
+    if (hasOwn(params.body, "cover_file")) {
+        await syncManagedFileBinding({
+            previousFileValue: params.target.cover_file,
+            nextFileValue: params.nextCoverFile,
+            userId: params.access.user.id,
+            visibility: params.updatedIsPublic ? "public" : "private",
+            reference: {
+                ownerCollection: "app_albums",
+                ownerId: params.albumId,
+                ownerField: "cover_file",
+                referenceKind: "structured_field",
+            },
         });
     }
     if (
@@ -332,6 +367,12 @@ async function syncAlbumCoverVisibility(params: {
             params.access.user.id,
             undefined,
             params.updatedIsPublic ? "public" : "private",
+            {
+                ownerCollection: "app_albums",
+                ownerId: params.albumId,
+                ownerField: "cover_file",
+                referenceKind: "structured_field",
+            },
         );
     }
     if (params.input.is_public !== undefined) {
@@ -350,7 +391,7 @@ async function syncAlbumPhotoVisibility(
 ): Promise<void> {
     const photoRows = await readMany("app_album_photos", {
         filter: { album_id: { _eq: albumId } } as JsonObject,
-        fields: ["file_id", "is_public"],
+        fields: ["id", "file_id", "is_public"],
         limit: 300,
     });
     for (const photo of photoRows) {
@@ -363,6 +404,12 @@ async function syncAlbumPhotoVisibility(
             userId,
             undefined,
             albumIsPublic && photo.is_public ? "public" : "private",
+            {
+                ownerCollection: "app_album_photos",
+                ownerId: String(photo.id ?? ""),
+                ownerField: "file_id",
+                referenceKind: "structured_field",
+            },
         );
     }
 }
@@ -371,11 +418,27 @@ async function handleAlbumDelete(
     id: string,
     target: AppAlbum,
 ): Promise<Response> {
-    const fileIds = await collectAlbumFileIds(id, target.cover_file);
+    const photoRows = await readMany("app_album_photos", {
+        filter: { album_id: { _eq: id } } as JsonObject,
+        fields: ["id"],
+        limit: 5000,
+    });
+    for (const photo of photoRows) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_album_photos",
+            ownerId: String(photo.id),
+        });
+    }
+    await resourceLifecycle.releaseOwnerResources({
+        ownerCollection: "app_albums",
+        ownerId: id,
+    });
     await deleteOne("app_albums", id);
-    await cleanupOwnedOrphanDirectusFiles({
-        candidateFileIds: fileIds,
-        ownerUserIds: [target.author_id],
+    await searchIndex.remove("album", id);
+    console.info("[audit] album.delete", {
+        albumId: id,
+        authorId: target.author_id,
+        releasedPhotoCount: photoRows.length,
     });
     await awaitCacheInvalidations(
         [
@@ -402,24 +465,24 @@ export async function handleMyAlbums(
     }
 
     if (segments.length === 2) {
-        const id = parseRouteId(segments[1]);
-        if (!id) {
-            return fail("缺少相册 ID", 400);
+        const parsed = parseAlbumRouteId(segments[1]);
+        if ("response" in parsed) {
+            return parsed.response;
         }
-        const target = await readOneById("app_albums", id);
+        const target = await loadVisibleAlbumById(parsed.id);
         if (!target) {
-            return fail("相册不存在", 404);
+            return fail("相册不存在", 404, "ALBUM_NOT_FOUND");
         }
         assertOwnerOrAdmin(access, target.author_id);
 
         if (context.request.method === "GET") {
-            return await handleAlbumGet(id, target);
+            return await handleAlbumGet(parsed.id, target);
         }
         if (context.request.method === "PATCH") {
-            return await handleAlbumPatch(context, access, id, target);
+            return await handleAlbumPatch(context, access, parsed.id, target);
         }
         if (context.request.method === "DELETE") {
-            return await handleAlbumDelete(id, target);
+            return await handleAlbumDelete(parsed.id, target);
         }
     }
 
@@ -469,13 +532,24 @@ async function handlePhotoPost(
             access.user.id,
             undefined,
             created.is_public && album.is_public ? "public" : "private",
+            {
+                ownerCollection: "app_album_photos",
+                ownerId: created.id,
+                ownerField: "file_id",
+                referenceKind: "structured_field",
+            },
         );
     }
     await awaitCacheInvalidations(
         [cacheManager.invalidate("album-detail", albumId)],
         { label: "me/album-photos#create" },
     );
-    return ok({ item: { ...created, tags: safeCsv(created.tags) } });
+    return ok({
+        item: {
+            ...normalizeAlbumPhotoImageUrl(created),
+            tags: safeCsv(created.tags),
+        },
+    });
 }
 
 function buildPhotoPatchPayload(
@@ -542,46 +616,59 @@ async function handlePhotoPatch(
     const updated = await updateOne("app_album_photos", photoId, payload);
     const album = await readOneById("app_albums", photo.album_id);
 
-    if (hasOwn(body as JsonObject, "file_id") && nextFileId) {
+    const nextVisibility =
+        (updated.is_public ?? photo.is_public) && Boolean(album?.is_public)
+            ? "public"
+            : "private";
+    if (hasOwn(body as JsonObject, "file_id")) {
+        await syncManagedFileBinding({
+            previousFileValue: photo.file_id,
+            nextFileValue: nextFileId,
+            userId: access.user.id,
+            visibility: nextVisibility,
+            reference: {
+                ownerCollection: "app_album_photos",
+                ownerId: photoId,
+                ownerField: "file_id",
+                referenceKind: "structured_field",
+            },
+        });
+    } else if (nextFileId && input.is_public !== undefined) {
         await bindFileOwnerToUser(
             nextFileId,
             access.user.id,
             undefined,
-            (updated.is_public ?? photo.is_public) && Boolean(album?.is_public)
-                ? "public"
-                : "private",
+            nextVisibility,
+            {
+                ownerCollection: "app_album_photos",
+                ownerId: photoId,
+                ownerField: "file_id",
+                referenceKind: "structured_field",
+            },
         );
-    }
-    if (
-        hasOwn(body as JsonObject, "file_id") &&
-        prevFileId &&
-        prevFileId !== nextFileId
-    ) {
-        await cleanupOwnedOrphanDirectusFiles({
-            candidateFileIds: [prevFileId],
-            ownerUserIds: [album?.author_id ?? access.user.id],
-        });
     }
     await awaitCacheInvalidations(
         [cacheManager.invalidate("album-detail", photo.album_id)],
         { label: "me/album-photos#patch" },
     );
-    return ok({ item: { ...updated, tags: safeCsv(updated.tags) } });
+    return ok({
+        item: {
+            ...normalizeAlbumPhotoImageUrl(updated),
+            tags: safeCsv(updated.tags),
+        },
+    });
 }
 
 async function handlePhotoDelete(
     photoId: string,
     photo: AppAlbumPhoto,
-    ownerUserId: string,
+    _ownerUserId: string,
 ): Promise<Response> {
-    const fileId = normalizeDirectusFileId(photo.file_id);
+    await resourceLifecycle.releaseOwnerResources({
+        ownerCollection: "app_album_photos",
+        ownerId: photoId,
+    });
     await deleteOne("app_album_photos", photoId);
-    if (fileId) {
-        await cleanupOwnedOrphanDirectusFiles({
-            candidateFileIds: [fileId],
-            ownerUserIds: [ownerUserId],
-        });
-    }
     await awaitCacheInvalidations(
         [cacheManager.invalidate("album-detail", photo.album_id)],
         { label: "me/album-photos#delete" },

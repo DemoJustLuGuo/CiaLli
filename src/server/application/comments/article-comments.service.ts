@@ -1,42 +1,61 @@
 import type { APIContext } from "astro";
 
+import type { AppArticle } from "@/types/app";
 import { assertCan, assertOwnerOrAdmin } from "@/server/auth/acl";
 import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import { cacheManager } from "@/server/cache/manager";
 import { parseJsonBody } from "@/server/api/utils";
 import { validateBody } from "@/server/api/validate";
 import { CreateCommentSchema, UpdateCommentSchema } from "@/server/api/schemas";
+import { AppError } from "@/server/api/errors";
 import { fail, ok } from "@/server/api/response";
 import { createOne, readOneById, updateOne } from "@/server/directus/client";
-import {
-    invalidateArticleInteractionAggregate,
-    requireAccess,
-} from "@/server/api/v1/shared";
+import { invalidateArticleInteractionAggregate } from "@/server/api/v1/shared/article-interaction";
+import { requireAccess } from "@/server/api/v1/shared/auth";
+import { loadPublicArticleByIdFromRepository } from "@/server/repositories/public/loaders.repository";
+import { withServiceRepositoryContext } from "@/server/repositories/directus/scope";
 import {
     buildCommentUpdatePayload,
     buildDecoratedCommentTree,
-    deleteCommentWithDescendants,
+    collectCommentDeletionTargets,
+    deleteCollectedCommentTargets,
     loadPaginatedComments,
     parseCommentPagination,
     renderCommentItem,
     validateReplyParent,
 } from "@/server/api/v1/comments-shared";
 import {
-    cleanupOwnedOrphanDirectusFiles,
-    extractDirectusAssetIdsFromMarkdown,
-} from "@/server/api/v1/shared/file-cleanup";
-import { syncMarkdownFilesToVisibility } from "@/server/api/v1/me/_helpers";
+    syncMarkdownFileLifecycle,
+    syncMarkdownFilesToVisibility,
+} from "@/server/api/v1/me/_helpers";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
+import { searchIndex } from "@/server/application/shared/search-index";
+
+async function loadVisibleArticleForComments(
+    articleId: string,
+): Promise<AppArticle | null> {
+    return await withServiceRepositoryContext(async () => {
+        try {
+            return await loadPublicArticleByIdFromRepository(articleId);
+        } catch (error) {
+            if (
+                error instanceof AppError &&
+                (error.status === 403 || error.status === 404)
+            ) {
+                return null;
+            }
+            throw error;
+        }
+    });
+}
 
 async function getArticleCommentList(
     context: APIContext,
     articleId: string,
 ): Promise<Response> {
-    const article = await readOneById("app_articles", articleId);
+    const article = await loadVisibleArticleForComments(articleId);
     if (!article) {
         return fail("文章不存在", 404);
-    }
-    if (!(article.status === "published" && article.is_public)) {
-        return fail("文章不可见", 404);
     }
 
     const pagination = parseCommentPagination(context.url);
@@ -73,11 +92,8 @@ async function createArticleComment(
     const access = required.access;
     assertCan(access, "can_comment_articles");
 
-    const article = await readOneById("app_articles", articleId);
+    const article = await loadVisibleArticleForComments(articleId);
     if (!article) {
-        return fail("文章不存在", 404);
-    }
-    if (!(article.status === "published" && article.is_public)) {
         return fail("文章不存在或不可见", 404);
     }
     if (!article.allow_comments) {
@@ -111,6 +127,12 @@ async function createArticleComment(
         created.body,
         access.user.id,
         created.is_public ? "public" : "private",
+        {
+            ownerCollection: "app_article_comments",
+            ownerId: created.id,
+            ownerField: "body",
+            referenceKind: "markdown_asset",
+        },
     );
     await awaitCacheInvalidations(
         [
@@ -142,31 +164,22 @@ async function patchArticleComment(
 
     const body = await parseJsonBody(context.request);
     const input = validateBody(UpdateCommentSchema, body);
-    const prevBodyFileIds = extractDirectusAssetIdsFromMarkdown(
-        String(comment.body ?? ""),
-    );
     const payload = buildCommentUpdatePayload(input);
     const updated = await updateOne("app_article_comments", commentId, payload);
     if (input.body !== undefined || input.is_public !== undefined) {
-        await syncMarkdownFilesToVisibility(
-            input.body ?? updated.body,
-            comment.author_id,
-            (input.is_public ?? updated.is_public) ? "public" : "private",
-        );
-    }
-    if (input.body !== undefined && prevBodyFileIds.length > 0) {
-        const nextBodyFileIds = new Set(
-            extractDirectusAssetIdsFromMarkdown(input.body),
-        );
-        const removedBodyFileIds = prevBodyFileIds.filter(
-            (id) => !nextBodyFileIds.has(id),
-        );
-        if (removedBodyFileIds.length > 0) {
-            await cleanupOwnedOrphanDirectusFiles({
-                candidateFileIds: removedBodyFileIds,
-                ownerUserIds: [comment.author_id],
-            });
-        }
+        await syncMarkdownFileLifecycle({
+            previousMarkdown: comment.body,
+            nextMarkdown: input.body ?? updated.body,
+            userId: comment.author_id,
+            visibility:
+                (input.is_public ?? updated.is_public) ? "public" : "private",
+            reference: {
+                ownerCollection: "app_article_comments",
+                ownerId: commentId,
+                ownerField: "body",
+                referenceKind: "markdown_asset",
+            },
+        });
     }
     await awaitCacheInvalidations(
         [
@@ -196,7 +209,22 @@ async function deleteArticleComment(
     }
     assertOwnerOrAdmin(access, comment.author_id);
 
-    await deleteCommentWithDescendants("app_article_comments", commentId);
+    const deletedComments = await collectCommentDeletionTargets(
+        "app_article_comments",
+        commentId,
+    );
+    for (const deletedComment of deletedComments) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_article_comments",
+            ownerId: deletedComment.id,
+        });
+        await searchIndex.remove("comment", deletedComment.id);
+    }
+    await deleteCollectedCommentTargets(
+        "app_article_comments",
+        commentId,
+        deletedComments,
+    );
     await awaitCacheInvalidations(
         [
             cacheManager.invalidate("article-detail", comment.article_id),

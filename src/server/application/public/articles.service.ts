@@ -3,16 +3,22 @@ import type { APIContext } from "astro";
 import type { JsonObject } from "@/types/json";
 import { fail, ok } from "@/server/api/response";
 import { parsePagination } from "@/server/api/utils";
+import { filterPublicStatus } from "@/server/api/v1/shared/auth";
 import {
     excludeSpecialArticleSlugFilter,
-    filterPublicStatus,
     isSpecialArticleSlug,
-    loadPublicArticleById,
-    loadPublicArticleBySlug,
-    parseRouteId,
     safeCsv,
-} from "@/server/api/v1/shared";
-import { getAuthorBundle } from "@/server/api/v1/shared/author-cache";
+} from "@/server/api/v1/shared/helpers";
+import {
+    loadPublicArticleById,
+    loadPublicArticleByShortId,
+    loadPublicArticleBySlug,
+} from "@/server/api/v1/shared/loaders";
+import { parseRouteId } from "@/server/api/v1/shared/parse";
+import {
+    getAuthorBundle,
+    readAuthor,
+} from "@/server/api/v1/shared/author-cache";
 import { cacheManager } from "@/server/cache/manager";
 import { hashParams } from "@/server/cache/key-utils";
 import {
@@ -26,14 +32,10 @@ import {
     buildArticleFeedEntry,
     normalizeIdentity,
 } from "@/server/application/feed/feed-entry-helpers";
+import { loadProfileByUsernameFromRepository } from "@/server/repositories/profile/profile.repository";
+import { isShortId } from "@/server/utils/short-id";
 import { buildPostUrl } from "@/utils/content-post-helpers";
 import type { DirectusPostEntry } from "@/utils/content-utils";
-
-import {
-    loadProfileByUsername,
-    normalizeAuthorHandle,
-    readAuthor,
-} from "@/server/api/v1/public/_helpers";
 
 const DEFAULT_PUBLIC_ARTICLE_LIST_LIMIT = 20;
 const MAX_PUBLIC_ARTICLE_LIST_LIMIT = 20;
@@ -94,6 +96,10 @@ function normalizeListQueryValue(
     return normalized || null;
 }
 
+function normalizeAuthorHandle(value: string): string {
+    return value.trim().replace(/^@+/, "").toLowerCase();
+}
+
 function buildPublicArticleCacheKey(input: PublicArticleListInput): string {
     return hashParams({
         page: input.page,
@@ -132,7 +138,9 @@ async function buildArticleListFilters(input: {
     const andFilters: JsonObject[] = buildPublicArticleBaseFilters();
 
     if (input.authorHandle) {
-        const profile = await loadProfileByUsername(input.authorHandle);
+        const profile = await loadProfileByUsernameFromRepository(
+            input.authorHandle,
+        );
         if (!profile?.user_id) {
             return {
                 filters: andFilters,
@@ -496,6 +504,37 @@ function shouldBypassArticleDetailCache(url: URL): boolean {
     return url.searchParams.get("bypass_cache") === "1";
 }
 
+async function loadPublicArticleByRouteId(articleId: string) {
+    const articleById = await loadPublicArticleById(articleId);
+    if (articleById) {
+        return articleById;
+    }
+    if (isShortId(articleId)) {
+        return await loadPublicArticleByShortId(articleId);
+    }
+    if (isSpecialArticleSlug(articleId)) {
+        return await loadPublicArticleBySlug(articleId);
+    }
+    return null;
+}
+
+function writeArticleDetailCache(
+    routeId: string,
+    article: NonNullable<
+        Awaited<ReturnType<typeof loadPublicArticleByRouteId>>
+    >,
+    result: unknown,
+): void {
+    void cacheManager.set("article-detail", routeId, result);
+    const normalizedShortId = String(article.short_id ?? "").trim();
+    if (normalizedShortId && normalizedShortId !== routeId) {
+        void cacheManager.set("article-detail", normalizedShortId, result);
+    }
+    if (article.id && article.id !== routeId) {
+        void cacheManager.set("article-detail", article.id, result);
+    }
+}
+
 async function handleArticleDetail(
     context: APIContext,
     segments: string[],
@@ -518,12 +557,7 @@ async function handleArticleDetail(
             }
         }
 
-        const articleById = await loadPublicArticleById(articleId);
-        const article =
-            articleById ||
-            (isSpecialArticleSlug(articleId)
-                ? await loadPublicArticleBySlug(articleId)
-                : null);
+        const article = await loadPublicArticleByRouteId(articleId);
         if (!article) {
             return fail("文章不存在", 404);
         }
@@ -540,7 +574,7 @@ async function handleArticleDetail(
             },
         };
         if (!bypassCache) {
-            void cacheManager.set("article-detail", articleId, result);
+            writeArticleDetailCache(articleId, article, result);
         }
         return ok(
             result,

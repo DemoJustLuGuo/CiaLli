@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+    readCachedProtectedContentPasswords,
+    resetProtectedContentPasswordCache,
+} from "@/scripts/shared/protected-content-password-cache";
+import I18nKey from "@/i18n/i18nKey";
+import { t } from "@/scripts/shared/i18n-runtime";
+import {
     ARTICLE_SAVE_SUCCESS_REDIRECT_URL,
     buildArticleDetailSuccessRedirectUrl,
     buildDiarySaveSuccessRedirectUrl,
@@ -22,6 +28,7 @@ describe("publish save redirect", () => {
     beforeEach(() => {
         navigateToPage.mockClear();
         requestApi.mockReset();
+        resetProtectedContentPasswordCache();
     });
 
     it("文章草稿保存成功后返回文章列表", async () => {
@@ -100,6 +107,48 @@ describe("publish save redirect", () => {
                 replace: true,
             },
         );
+    });
+
+    it("文章发布成功后仅把 owner 密码写入内存缓存", async () => {
+        const fakeSessionStorage = {
+            getItem: vi.fn(),
+            setItem: vi.fn(),
+            removeItem: vi.fn(),
+        };
+        vi.stubGlobal(
+            "sessionStorage",
+            fakeSessionStorage as unknown as Storage,
+        );
+        const { handleSubmitApiResponse } =
+            await import("@/scripts/publish/page-submit");
+
+        await handleSubmitApiResponse(
+            makePublishState(),
+            makeUiHelpers(),
+            async () => true,
+            "secret",
+            {
+                item: {
+                    id: "post-1",
+                    short_id: "post-short",
+                    slug: "published-post",
+                },
+            },
+            {
+                targetStatus: "published",
+            },
+        );
+
+        expect(fakeSessionStorage.getItem).not.toHaveBeenCalled();
+        expect(fakeSessionStorage.setItem).not.toHaveBeenCalled();
+        expect(fakeSessionStorage.removeItem).not.toHaveBeenCalled();
+        expect(
+            readCachedProtectedContentPasswords([
+                "owner-article-password:id:post-1",
+                "owner-article-password:short:post-short",
+                "owner-article-password:slug:published-post",
+            ]),
+        ).toEqual(["secret"]);
     });
 
     it("文章未保存守卫保存路径不触发列表跳转", async () => {
@@ -198,6 +247,83 @@ describe("publish save redirect", () => {
             }),
         ).toBe("/posts/post-short");
     });
+
+    it("发布校验按缺失字段显示明确错误", async () => {
+        const { validateSubmitForm } =
+            await import("@/scripts/publish/page-submit");
+        const cases = [
+            {
+                title: "",
+                body: "",
+                expected: t(I18nKey.articleEditorTitleBodyRequired),
+            },
+            {
+                title: "",
+                body: "正文",
+                expected: t(I18nKey.articleEditorTitleRequired),
+            },
+            {
+                title: "标题",
+                body: "",
+                expected: t(I18nKey.articleEditorBodyRequired),
+            },
+        ];
+
+        for (const item of cases) {
+            const ui = makeUiHelpers();
+            const result = validateSubmitForm(
+                makePublishDomRefs(item.body, { title: item.title }),
+                makePublishState(),
+                ui,
+                "published",
+            );
+
+            expect(result.valid).toBe(false);
+            expect(ui.setSubmitError).toHaveBeenCalledWith(item.expected);
+        }
+    });
+
+    it("保存草稿允许空标题和空正文", async () => {
+        const { validateSubmitForm } =
+            await import("@/scripts/publish/page-submit");
+        const ui = makeUiHelpers();
+
+        const result = validateSubmitForm(
+            makePublishDomRefs("", { title: "" }),
+            makePublishState(),
+            ui,
+            "draft",
+        );
+
+        expect(result.valid).toBe(true);
+        expect(ui.setSubmitError).not.toHaveBeenCalled();
+    });
+
+    it("发布 API 错误提取提供非空 fallback 并映射字段校验错误", async () => {
+        const { getApiMessage } =
+            await import("@/scripts/publish/page-helpers");
+
+        expect(getApiMessage(null, "")).toBe(
+            t(I18nKey.articleEditorSaveFailedRetry),
+        );
+        expect(
+            getApiMessage(
+                { error: { message: "   " } },
+                t(I18nKey.articleEditorSaveFailedRetry),
+            ),
+        ).toBe(t(I18nKey.articleEditorSaveFailedRetry));
+        expect(
+            getApiMessage(
+                {
+                    error: {
+                        code: "VALIDATION_ERROR",
+                        message: "body_markdown: 正文必填",
+                    },
+                },
+                t(I18nKey.articleEditorSaveFailedRetry),
+            ),
+        ).toBe(t(I18nKey.articleEditorBodyRequired));
+    });
 });
 
 function makePublishState(
@@ -230,6 +356,7 @@ function makePublishState(
 
 function makePublishDomRefs(
     body: string,
+    options: { title?: string } = {},
 ): import("@/scripts/publish/page-dom").PublishDomRefs {
     return {
         workspaceEl: {} as HTMLElement,
@@ -264,7 +391,9 @@ function makePublishDomRefs(
         coverMsgEl: null,
         coverPreviewWrapEl: null,
         coverPreviewEl: null,
-        articleTitleInput: { value: "标题" } as HTMLInputElement,
+        articleTitleInput: {
+            value: options.title ?? "标题",
+        } as HTMLInputElement,
         articleTitleHintEl: null,
         articleSummaryInput: { value: "" } as HTMLTextAreaElement,
         articleBodyInput: { value: body } as HTMLTextAreaElement,

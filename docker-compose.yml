@@ -4,6 +4,9 @@ services:
     depends_on:
       web:
         condition: service_started
+    environment:
+      APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost}
+      CADDY_ADDITIONAL_SITE_ADDRESS: ${CADDY_ADDITIONAL_SITE_ADDRESS:-}
     ports:
       - "80:80"
       - "443:443"
@@ -17,7 +20,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["pnpm", "start:prod"]
+      target: web-runtime
+      args:
+        APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost}
+    command: ["node", "./dist/server/entry.mjs"]
     depends_on:
       directus:
         condition: service_healthy
@@ -27,20 +33,24 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 4321
-      APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-https://localhost}
+      APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost}
       DIRECTUS_URL: http://directus:8055
-      DIRECTUS_STATIC_TOKEN: ${DIRECTUS_STATIC_TOKEN}
+      DIRECTUS_WEB_STATIC_TOKEN: ${DIRECTUS_WEB_STATIC_TOKEN}
       PUBLIC_ASSET_BASE_URL: ${PUBLIC_ASSET_BASE_URL:-}
-      BANGUMI_TOKEN_ENCRYPTION_KEY: ${BANGUMI_TOKEN_ENCRYPTION_KEY:-}
+      APP_SECRET_ENCRYPTION_KEY: ${APP_SECRET_ENCRYPTION_KEY:-}
       REDIS_URL: redis://redis:6379/0
-      AI_SUMMARY_INTERNAL_SECRET: ${AI_SUMMARY_INTERNAL_SECRET:-change-me}
+      AI_SUMMARY_INTERNAL_SECRET: ${AI_SUMMARY_INTERNAL_SECRET}
+      AI_SUMMARY_PROVIDER_TIMEOUT_MS: ${AI_SUMMARY_PROVIDER_TIMEOUT_MS:-90000}
     restart: unless-stopped
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["pnpm", "ai-summary:worker"]
+      target: worker-runtime
+      args:
+        APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost}
+    command: ["node", "./dist/worker/entry.mjs"]
     depends_on:
       directus:
         condition: service_healthy
@@ -48,11 +58,23 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
+      APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost}
       DIRECTUS_URL: http://directus:8055
-      DIRECTUS_STATIC_TOKEN: ${DIRECTUS_STATIC_TOKEN}
-      AI_SUMMARY_INTERNAL_SECRET: ${AI_SUMMARY_INTERNAL_SECRET:-change-me}
+      DIRECTUS_WORKER_STATIC_TOKEN: ${DIRECTUS_WORKER_STATIC_TOKEN}
+      AI_SUMMARY_INTERNAL_SECRET: ${AI_SUMMARY_INTERNAL_SECRET}
       REDIS_URL: redis://redis:6379/0
-      BANGUMI_TOKEN_ENCRYPTION_KEY: ${BANGUMI_TOKEN_ENCRYPTION_KEY:-}
+      APP_SECRET_ENCRYPTION_KEY: ${APP_SECRET_ENCRYPTION_KEY:-}
+      AI_SUMMARY_PROVIDER_TIMEOUT_MS: ${AI_SUMMARY_PROVIDER_TIMEOUT_MS:-90000}
+      FILE_GC_INTERVAL_MS: ${FILE_GC_INTERVAL_MS:-900000}
+      FILE_GC_RETENTION_HOURS: ${FILE_GC_RETENTION_HOURS:-168}
+      FILE_GC_QUARANTINE_DAYS: ${FILE_GC_QUARANTINE_DAYS:-7}
+      FILE_GC_BATCH_SIZE: ${FILE_GC_BATCH_SIZE:-200}
+      FILE_GC_DELETE_MAX_ATTEMPTS: ${FILE_GC_DELETE_MAX_ATTEMPTS:-6}
+      FILE_DETACH_JOB_INTERVAL_MS: ${FILE_DETACH_JOB_INTERVAL_MS:-60000}
+      FILE_DETACH_JOB_BATCH_SIZE: ${FILE_DETACH_JOB_BATCH_SIZE:-50}
+      FILE_DETACH_JOB_LEASE_SECONDS: ${FILE_DETACH_JOB_LEASE_SECONDS:-300}
+      FILE_LIFECYCLE_RECONCILE_INTERVAL_MS: ${FILE_LIFECYCLE_RECONCILE_INTERVAL_MS:-86400000}
+      FILE_REFERENCE_SHADOW_INTERVAL_MS: ${FILE_REFERENCE_SHADOW_INTERVAL_MS:-86400000}
     restart: unless-stopped
 
   postgres:
@@ -197,8 +219,8 @@ services:
       - |
         SEED_DIR="/seed/minio/demo-bucket"
         if [ ! -d "$$SEED_DIR" ]; then
-          echo "[seed-minio-restore] seed directory not found: $$SEED_DIR" >&2
-          exit 1
+          echo "[seed-minio-restore] seed directory not found: $$SEED_DIR; treat as empty seed and skip restore."
+          exit 0
         fi
         if grep -R -m 1 -l "version https://git-lfs.github.com/spec/v1" "$$SEED_DIR" >/dev/null 2>&1; then
           echo "[seed-minio-restore] seed objects are still Git LFS pointers; run git lfs pull first." >&2

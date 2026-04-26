@@ -26,7 +26,6 @@ import {
     deleteDirectusUser,
     readMany,
     syncDirectusUserPolicies,
-    updateDirectusFileMetadata,
     updateDirectusUser,
     updateOne,
     createOne,
@@ -37,15 +36,18 @@ import { withUserRepositoryContext } from "@/server/repositories/directus/scope"
 import { parseJsonBody, parsePagination } from "@/server/api/utils";
 import { invalidateOfficialSidebarCache } from "@/server/api/v1/public-data";
 import { normalizeDirectusFileId } from "@/server/api/v1/shared/file-cleanup";
-
 import {
-    ensureUsernameAvailable,
+    bindFileOwnerToUser,
+    syncManagedFileBinding,
+} from "@/server/api/v1/me/_helpers";
+
+import { requireAdmin } from "@/server/api/v1/shared/auth";
+import { ensureUsernameAvailable } from "@/server/api/v1/shared/loaders";
+import {
     normalizeAppRole,
     normalizeRegistrationRequestStatus,
-    parseBodyTextField,
-    parseRouteId,
-    requireAdmin,
-} from "@/server/api/v1/shared";
+} from "@/server/api/v1/shared/normalize";
+import { parseBodyTextField, parseRouteId } from "@/server/api/v1/shared/parse";
 import { invalidateAuthorCache } from "@/server/api/v1/shared/author-cache";
 
 const REGISTRATION_REASON_MAX_LENGTH = 500;
@@ -317,11 +319,18 @@ async function handleRegistrationApprove(
         target.avatar_file,
     );
     if (registrationAvatarFileId) {
-        await updateDirectusFileMetadata(registrationAvatarFileId, {
-            uploaded_by: created.user.id,
-            app_owner_user_id: created.user.id,
-            app_visibility: "public",
-        }).catch((error) => {
+        await bindFileOwnerToUser(
+            registrationAvatarFileId,
+            created.user.id,
+            undefined,
+            "public",
+            {
+                ownerCollection: "directus_users",
+                ownerId: created.user.id,
+                ownerField: "avatar",
+                referenceKind: "structured_field",
+            },
+        ).catch((error) => {
             console.warn(
                 "[registration-approve] 更新头像文件元数据失败, fileId:",
                 registrationAvatarFileId,
@@ -390,12 +399,25 @@ async function handleRegistrationRejectOrCancel(
         target.id,
         {
             request_status: action === "reject" ? "rejected" : "cancelled",
+            avatar_file: null,
             reviewed_by: reviewedBy,
             reviewed_at: reviewedAt,
             pending_user_id: null,
             reject_reason: action === "reject" ? reason : null,
         },
     );
+    await syncManagedFileBinding({
+        previousFileValue: target.avatar_file,
+        nextFileValue: null,
+        userId: pendingUserId || null,
+        visibility: "private",
+        reference: {
+            ownerCollection: "app_user_registration_requests",
+            ownerId: target.id,
+            ownerField: "avatar_file",
+            referenceKind: "structured_field",
+        },
+    });
     return ok({ item: updated });
 }
 

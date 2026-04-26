@@ -1,7 +1,12 @@
 import type { APIContext } from "astro";
 
 import type { JsonObject } from "@/types/json";
-import { deleteOne, readMany, updateOne } from "@/server/directus/client";
+import {
+    deleteOne,
+    readMany,
+    readOneById,
+    updateOne,
+} from "@/server/directus/client";
 import { fail, ok } from "@/server/api/response";
 import { withUserRepositoryContext } from "@/server/repositories/directus/scope";
 import {
@@ -13,28 +18,22 @@ import {
 import { cacheManager } from "@/server/cache/manager";
 import { awaitCacheInvalidations } from "@/server/cache/invalidation";
 import {
-    cleanupOwnedOrphanDirectusFiles,
-    collectAlbumFileIds,
-    collectArticleCommentCleanupCandidates,
-    collectDiaryCommentCleanupCandidates,
-    collectDiaryFileIds,
-    extractDirectusAssetIdsFromMarkdown,
-    mergeDirectusFileCleanupCandidates,
-    normalizeDirectusFileId,
-} from "@/server/api/v1/shared/file-cleanup";
-import { deleteCommentWithDescendants } from "@/server/api/v1/comments-shared";
+    collectCommentDeletionTargets,
+    deleteCollectedCommentTargets,
+} from "@/server/api/v1/comments-shared";
 
 import {
     ADMIN_MODULE_COLLECTION,
     DIARY_FIELDS,
-    type AdminModuleKey,
-    hasOwn,
-    invalidateArticleInteractionAggregate,
-    invalidateDiaryInteractionAggregate,
-    parseBodyTextField,
-    parseRouteId,
-    requireAdmin,
-} from "@/server/api/v1/shared";
+} from "@/server/api/v1/shared/constants";
+import type { AdminModuleKey } from "@/server/api/v1/shared/types";
+import { hasOwn } from "@/server/api/v1/shared/helpers";
+import { requireAdmin } from "@/server/api/v1/shared/auth";
+import { invalidateArticleInteractionAggregate } from "@/server/api/v1/shared/article-interaction";
+import { invalidateDiaryInteractionAggregate } from "@/server/api/v1/shared/diary-interaction";
+import { parseBodyTextField, parseRouteId } from "@/server/api/v1/shared/parse";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
+import { searchIndex } from "@/server/application/shared/search-index";
 
 function buildDiaryDetailInvalidationTasks(
     id: string,
@@ -196,103 +195,16 @@ async function invalidatePatchCache(
 }
 
 type AdminCollection = (typeof ADMIN_MODULE_COLLECTION)[AdminModuleKey];
-async function collectArticleDeleteFileIds(id: string): Promise<{
-    cleanupCandidates: {
-        candidateFileIds: string[];
-        ownerUserIds: string[];
-    };
-}> {
-    const rows = await readMany("app_articles", {
-        filter: { id: { _eq: id } } as JsonObject,
-        fields: ["cover_file", "body_markdown", "author_id"],
-        limit: 1,
-    });
-    const ownerUserId = toOptionalString(rows[0]?.author_id);
-    const fileIds = extractDirectusAssetIdsFromMarkdown(
-        toOptionalString(rows[0]?.body_markdown) ?? "",
-    );
-    const coverFile = normalizeDirectusFileId(rows[0]?.cover_file);
-    if (coverFile) {
-        fileIds.unshift(coverFile);
-    }
-    return {
-        cleanupCandidates: mergeDirectusFileCleanupCandidates(
-            {
-                candidateFileIds: fileIds,
-                ownerUserIds: ownerUserId ? [ownerUserId] : [],
-            },
-            await collectArticleCommentCleanupCandidates(id),
-        ),
-    };
-}
 
-async function collectAlbumDeleteFileIds(id: string): Promise<{
-    cleanupCandidates: {
-        candidateFileIds: string[];
-        ownerUserIds: string[];
-    };
-}> {
-    const rows = await readMany("app_albums", {
-        filter: { id: { _eq: id } } as JsonObject,
-        fields: ["cover_file", "author_id"],
-        limit: 1,
+async function releaseCollectionOwnerResources(
+    collection: AdminCollection,
+    id: string,
+): Promise<void> {
+    await resourceLifecycle.releaseOwnerResources({
+        ownerCollection: collection,
+        ownerId: id,
     });
-    return {
-        cleanupCandidates: {
-            candidateFileIds: await collectAlbumFileIds(
-                id,
-                rows[0]?.cover_file,
-            ),
-            ownerUserIds: toOptionalString(rows[0]?.author_id)
-                ? [toOptionalString(rows[0]?.author_id) as string]
-                : [],
-        },
-    };
 }
-
-async function collectDiaryDeleteFileIds(id: string): Promise<{
-    cleanupCandidates: {
-        candidateFileIds: string[];
-        ownerUserIds: string[];
-    };
-}> {
-    const rows = await readMany("app_diaries", {
-        filter: { id: { _eq: id } } as JsonObject,
-        fields: ["author_id", "content"],
-        limit: 1,
-    });
-    const fileIds = await collectDiaryFileIds(id);
-    fileIds.push(
-        ...extractDirectusAssetIdsFromMarkdown(
-            toOptionalString(rows[0]?.content) ?? "",
-        ),
-    );
-    return {
-        cleanupCandidates: mergeDirectusFileCleanupCandidates(
-            {
-                candidateFileIds: fileIds,
-                ownerUserIds: toOptionalString(rows[0]?.author_id)
-                    ? [toOptionalString(rows[0]?.author_id) as string]
-                    : [],
-            },
-            await collectDiaryCommentCleanupCandidates(id),
-        ),
-    };
-}
-
-const DELETE_FILE_ID_COLLECTORS: Record<
-    Extract<AdminModuleKey, "articles" | "albums" | "diaries">,
-    (id: string) => Promise<{
-        cleanupCandidates: {
-            candidateFileIds: string[];
-            ownerUserIds: string[];
-        };
-    }>
-> = {
-    articles: collectArticleDeleteFileIds,
-    albums: collectAlbumDeleteFileIds,
-    diaries: collectDiaryDeleteFileIds,
-};
 
 async function handleContentPatch(
     context: APIContext,
@@ -332,23 +244,6 @@ async function handleContentPatch(
             : adminVisibleDiary?.short_id;
     await invalidatePatchCache(module, id, updatedShortId, relatedComment);
     return ok({ item: updated });
-}
-
-async function collectDeleteFileIds(
-    module: Extract<AdminModuleKey, "articles" | "albums" | "diaries">,
-    id: string,
-    adminVisibleDiary: { id: string; short_id: string | null } | null,
-): Promise<{
-    cleanupCandidates: {
-        candidateFileIds: string[];
-        ownerUserIds: string[];
-    };
-    deletedDiaryShortId: string | null;
-}> {
-    const { cleanupCandidates } = await DELETE_FILE_ID_COLLECTORS[module](id);
-    const deletedDiaryShortId =
-        module === "diaries" ? (adminVisibleDiary?.short_id ?? null) : null;
-    return { cleanupCandidates, deletedDiaryShortId };
 }
 
 async function invalidateDeleteCache(
@@ -411,27 +306,203 @@ async function handleContentDelete(
     relatedComment: { article_id?: string; diary_id?: string } | undefined,
 ): Promise<Response> {
     if (module === "article-comments") {
-        await deleteCommentWithDescendants("app_article_comments", id);
-        await invalidateDeleteCache(module, id, null, relatedComment);
-        return ok({ id, module });
+        return await handleArticleCommentDelete(id, relatedComment);
     }
     if (module === "diary-comments") {
-        await deleteCommentWithDescendants("app_diary_comments", id);
-        await invalidateDeleteCache(module, id, null, relatedComment);
-        return ok({ id, module });
+        return await handleDiaryCommentDelete(id, relatedComment);
     }
 
-    const { cleanupCandidates, deletedDiaryShortId } =
-        await collectDeleteFileIds(module, id, adminVisibleDiary);
+    if (module === "articles") {
+        return await handleArticleDelete(collection, id, relatedComment);
+    }
+
+    if (module === "diaries") {
+        return await handleDiaryDelete(
+            collection,
+            id,
+            adminVisibleDiary,
+            relatedComment,
+        );
+    }
+
+    if (module === "albums") {
+        return await handleAlbumDelete(collection, id, relatedComment);
+    }
+
+    await releaseCollectionOwnerResources(collection, id);
     await deleteOne(collection, id);
-    await cleanupOwnedOrphanDirectusFiles(cleanupCandidates);
     await invalidateDeleteCache(
         module,
         id,
-        deletedDiaryShortId,
+        module === "diaries" ? (adminVisibleDiary?.short_id ?? null) : null,
         relatedComment,
     );
     return ok({ id, module });
+}
+
+async function handleArticleCommentDelete(
+    id: string,
+    relatedComment: { article_id?: string; diary_id?: string } | undefined,
+): Promise<Response> {
+    const deletedComments = await collectCommentDeletionTargets(
+        "app_article_comments",
+        id,
+    );
+    for (const deletedComment of deletedComments) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_article_comments",
+            ownerId: deletedComment.id,
+        });
+        await searchIndex.remove("comment", deletedComment.id);
+    }
+    await deleteCollectedCommentTargets(
+        "app_article_comments",
+        id,
+        deletedComments,
+    );
+    await invalidateDeleteCache("article-comments", id, null, relatedComment);
+    return ok({ id, module: "article-comments" });
+}
+
+async function handleDiaryCommentDelete(
+    id: string,
+    relatedComment: { article_id?: string; diary_id?: string } | undefined,
+): Promise<Response> {
+    const deletedComments = await collectCommentDeletionTargets(
+        "app_diary_comments",
+        id,
+    );
+    for (const deletedComment of deletedComments) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_diary_comments",
+            ownerId: deletedComment.id,
+        });
+        await searchIndex.remove("comment", deletedComment.id);
+    }
+    await deleteCollectedCommentTargets(
+        "app_diary_comments",
+        id,
+        deletedComments,
+    );
+    await invalidateDeleteCache("diary-comments", id, null, relatedComment);
+    return ok({ id, module: "diary-comments" });
+}
+
+async function handleArticleDelete(
+    collection: AdminCollection,
+    id: string,
+    relatedComment: { article_id?: string; diary_id?: string } | undefined,
+): Promise<Response> {
+    const target = await readOneById("app_articles", id, {
+        fields: ["id", "body_markdown", "cover_file"],
+    });
+    if (!target) {
+        return fail("内容不存在", 404);
+    }
+    const commentRows = await readMany("app_article_comments", {
+        filter: { article_id: { _eq: id } } as JsonObject,
+        fields: ["id"],
+        limit: 5000,
+    });
+    for (const comment of commentRows) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_article_comments",
+            ownerId: String(comment.id),
+        });
+        await searchIndex.remove("comment", String(comment.id));
+    }
+    await resourceLifecycle.releaseOwnerResources({
+        ownerCollection: "app_articles",
+        ownerId: id,
+    });
+    await deleteOne(collection, id);
+    await searchIndex.remove("article", id);
+    await invalidateDeleteCache("articles", id, null, relatedComment);
+    return ok({ id, module: "articles" });
+}
+
+async function handleDiaryDelete(
+    collection: AdminCollection,
+    id: string,
+    adminVisibleDiary: { id: string; short_id: string | null } | null,
+    relatedComment: { article_id?: string; diary_id?: string } | undefined,
+): Promise<Response> {
+    const target = await readOneById("app_diaries", id, {
+        fields: ["id", "content"],
+    });
+    if (!target) {
+        return fail("日记不存在", 404);
+    }
+    const [commentRows, imageRows] = await Promise.all([
+        readMany("app_diary_comments", {
+            filter: { diary_id: { _eq: id } } as JsonObject,
+            fields: ["id"],
+            limit: 5000,
+        }),
+        readMany("app_diary_images", {
+            filter: { diary_id: { _eq: id } } as JsonObject,
+            fields: ["id"],
+            limit: 5000,
+        }),
+    ]);
+    for (const image of imageRows) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_diary_images",
+            ownerId: String(image.id),
+        });
+    }
+    for (const comment of commentRows) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_diary_comments",
+            ownerId: String(comment.id),
+        });
+        await searchIndex.remove("comment", String(comment.id));
+    }
+    await resourceLifecycle.releaseOwnerResources({
+        ownerCollection: "app_diaries",
+        ownerId: id,
+    });
+    await deleteOne(collection, id);
+    await searchIndex.remove("diary", id);
+    await invalidateDeleteCache(
+        "diaries",
+        id,
+        adminVisibleDiary?.short_id ?? null,
+        relatedComment,
+    );
+    return ok({ id, module: "diaries" });
+}
+
+async function handleAlbumDelete(
+    collection: AdminCollection,
+    id: string,
+    relatedComment: { article_id?: string; diary_id?: string } | undefined,
+): Promise<Response> {
+    const target = await readOneById("app_albums", id, {
+        fields: ["id", "cover_file"],
+    });
+    if (!target) {
+        return fail("内容不存在", 404);
+    }
+    const photoRows = await readMany("app_album_photos", {
+        filter: { album_id: { _eq: id } } as JsonObject,
+        fields: ["id"],
+        limit: 5000,
+    });
+    for (const photo of photoRows) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_album_photos",
+            ownerId: String(photo.id),
+        });
+    }
+    await resourceLifecycle.releaseOwnerResources({
+        ownerCollection: "app_albums",
+        ownerId: id,
+    });
+    await deleteOne(collection, id);
+    await searchIndex.remove("album", id);
+    await invalidateDeleteCache("albums", id, null, relatedComment);
+    return ok({ id, module: "albums" });
 }
 
 async function loadRelatedComment(
@@ -507,6 +578,37 @@ async function handleContentItem(
     return fail("未找到接口", 404);
 }
 
+async function handleFileRestore(
+    context: APIContext,
+    segments: string[],
+): Promise<Response> {
+    const id = parseRouteId(segments[2]);
+    if (!id) {
+        return fail("参数不完整", 400);
+    }
+    if (context.request.method !== "POST") {
+        return fail("未找到接口", 404);
+    }
+
+    const result = await resourceLifecycle.restoreQuarantinedFiles({
+        fileIds: [id],
+        requireReference: true,
+    });
+    if (result.restoredFileIds.includes(id)) {
+        return ok({ file_id: id, restored: true, result });
+    }
+    if (result.skippedMissingFileIds.includes(id)) {
+        return fail("文件不存在", 404);
+    }
+    if (result.skippedNotQuarantinedFileIds.includes(id)) {
+        return fail("文件不处于隔离状态，不能恢复", 409);
+    }
+    if (result.skippedUnreferencedFileIds.includes(id)) {
+        return fail("文件没有有效引用，已阻止误恢复", 409);
+    }
+    return fail("文件恢复失败", 409);
+}
+
 export async function handleAdminContent(
     context: APIContext,
     segments: string[],
@@ -519,6 +621,14 @@ export async function handleAdminContent(
     return await withUserRepositoryContext(required.accessToken, async () => {
         if (segments.length === 1 && context.request.method === "GET") {
             return handleContentList(context);
+        }
+
+        if (
+            segments.length === 4 &&
+            segments[1] === "files" &&
+            segments[3] === "restore"
+        ) {
+            return handleFileRestore(context, segments);
         }
 
         if (segments.length === 3) {

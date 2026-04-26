@@ -29,26 +29,25 @@ import {
 } from "@/server/directus/client";
 import { canTransitionArticleStatus } from "@/server/domain/article/article.rules";
 import { createWithShortId } from "@/server/utils/short-id";
-import type { AppAccess } from "@/server/api/v1/shared";
+import type { AppAccess } from "@/server/api/v1/shared/types";
+import { ARTICLE_FIELDS } from "@/server/api/v1/shared/constants";
 import {
-    ARTICLE_FIELDS,
     hasOwn,
-    parseRouteId,
     safeCsv,
     toSpecialArticleSlug,
-} from "@/server/api/v1/shared";
-import {
-    cleanupOwnedOrphanDirectusFiles,
-    collectArticleCommentCleanupCandidates,
-    extractDirectusAssetIdsFromMarkdown,
-    mergeDirectusFileCleanupCandidates,
-    normalizeDirectusFileId,
-} from "@/server/api/v1/shared/file-cleanup";
+} from "@/server/api/v1/shared/helpers";
+import { parseRouteId } from "@/server/api/v1/shared/parse";
+import { normalizeDirectusFileId } from "@/server/api/v1/shared/file-cleanup";
 import {
     bindFileOwnerToUser,
     renderMeMarkdownPreview,
+    syncManagedFileBinding,
+    syncMarkdownFileLifecycle,
     syncMarkdownFilesToVisibility,
 } from "@/server/api/v1/me/_helpers";
+import { readComments } from "@/server/repositories/comments/comments.repository";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
+import { searchIndex } from "@/server/application/shared/search-index";
 
 type OwnedArticleRecord = JsonObject & {
     id: string;
@@ -316,6 +315,7 @@ async function handleArticlesCreate(
     assertCan(access, "can_publish_articles");
     const body = await parseJsonBody(context.request);
     const input = validateBody(CreateArticleSchema, body);
+    assertArticlePublishable(input);
 
     const specialSlug = toSpecialArticleSlug(input.slug);
     const articlePayload = {
@@ -352,12 +352,24 @@ async function handleArticlesCreate(
             access.user.id,
             coverTitle,
             resolveArticleAssetVisibility(created.status, created.is_public),
+            {
+                ownerCollection: "app_articles",
+                ownerId: created.id,
+                ownerField: "cover_file",
+                referenceKind: "structured_field",
+            },
         );
     }
     await syncMarkdownFilesToVisibility(
         created?.body_markdown,
         access.user.id,
         resolveArticleAssetVisibility(created.status, created.is_public),
+        {
+            ownerCollection: "app_articles",
+            ownerId: created.id,
+            ownerField: "body_markdown",
+            referenceKind: "markdown_asset",
+        },
     );
     await awaitCacheInvalidations(
         [
@@ -378,9 +390,9 @@ function applyArticleBaseFields(
     input: UpdateArticleInput,
     body: JsonObject,
     target?: OwnedArticleRecord,
-): string | null {
+): { coverFileTouched: boolean; nextCoverFile: string | null } {
+    let coverFileTouched = false;
     let nextCoverFile: string | null = null;
-
     if (input.title !== undefined) {
         payload.title = input.title;
     }
@@ -395,6 +407,7 @@ function applyArticleBaseFields(
         payload.ai_summary_enabled = input.ai_summary_enabled;
     }
     if (hasOwn(body, "cover_file")) {
+        coverFileTouched = true;
         nextCoverFile = normalizeDirectusFileId(input.cover_file);
         payload.cover_file = input.cover_file ?? null;
     }
@@ -413,7 +426,7 @@ function applyArticleBaseFields(
     if (input.is_public !== undefined) {
         payload.is_public = input.is_public;
     }
-    return nextCoverFile;
+    return { coverFileTouched, nextCoverFile };
 }
 
 function applyArticleStatusFields(
@@ -440,8 +453,15 @@ function buildArticlePatchPayload(
     const prevCoverFile = normalizeDirectusFileId(target.cover_file);
     const payload: JsonObject = {};
 
-    const newCoverFile = applyArticleBaseFields(payload, input, body, target);
-    const nextCoverFile = newCoverFile ?? prevCoverFile;
+    const coverFileResult = applyArticleBaseFields(
+        payload,
+        input,
+        body,
+        target,
+    );
+    const nextCoverFile = coverFileResult.coverFileTouched
+        ? coverFileResult.nextCoverFile
+        : prevCoverFile;
     const currentStatus = normalizeArticleStatus(target.status);
     const nextStatus =
         input.status !== undefined
@@ -465,12 +485,6 @@ async function cleanupPatchedArticleFiles(
     access: AppAccess,
 ): Promise<void> {
     const prevCoverFile = normalizeDirectusFileId(target.cover_file);
-    const prevBodyFileIds =
-        input.body_markdown !== undefined
-            ? extractDirectusAssetIdsFromMarkdown(
-                  String(target.body_markdown ?? ""),
-              )
-            : [];
     const nextVisibility = resolveArticleAssetVisibility(
         nextStatus,
         nextIsPublic,
@@ -481,12 +495,6 @@ async function cleanupPatchedArticleFiles(
         target,
         nextCoverFile,
         nextVisibility,
-        access,
-    });
-    await cleanupRemovedArticleBodyFiles({
-        input,
-        target,
-        prevBodyFileIds,
         access,
     });
     await syncArticleBodyVisibility({
@@ -512,52 +520,23 @@ async function syncArticleCoverBinding(params: {
     nextVisibility: "private" | "public";
     access: AppAccess;
 }): Promise<void> {
-    const prevCoverFile = normalizeDirectusFileId(params.target.cover_file);
-    if (hasOwn(params.body, "cover_file") && params.nextCoverFile) {
+    if (hasOwn(params.body, "cover_file")) {
         const coverTitle = params.target.short_id
             ? `Cover ${params.target.short_id}`
             : undefined;
-        await bindFileOwnerToUser(
-            params.nextCoverFile,
-            params.access.user.id,
-            coverTitle,
-            params.nextVisibility,
-        );
-    }
-    if (
-        hasOwn(params.body, "cover_file") &&
-        prevCoverFile &&
-        prevCoverFile !== params.nextCoverFile
-    ) {
-        await cleanupOwnedOrphanDirectusFiles({
-            candidateFileIds: [prevCoverFile],
-            ownerUserIds: [params.access.user.id],
+        await syncManagedFileBinding({
+            previousFileValue: params.target.cover_file,
+            nextFileValue: params.nextCoverFile,
+            userId: params.access.user.id,
+            title: coverTitle,
+            visibility: params.nextVisibility,
+            reference: {
+                ownerCollection: "app_articles",
+                ownerId: params.target.id,
+                ownerField: "cover_file",
+                referenceKind: "structured_field",
+            },
         });
-    }
-}
-
-async function cleanupRemovedArticleBodyFiles(params: {
-    input: UpdateArticleInput;
-    target: OwnedArticleRecord;
-    prevBodyFileIds: string[];
-    access: AppAccess;
-}): Promise<void> {
-    if (
-        params.input.body_markdown !== undefined &&
-        params.prevBodyFileIds.length > 0
-    ) {
-        const nextBodyFileIds = new Set(
-            extractDirectusAssetIdsFromMarkdown(params.input.body_markdown),
-        );
-        const removedBodyFileIds = params.prevBodyFileIds.filter(
-            (id) => !nextBodyFileIds.has(id),
-        );
-        if (removedBodyFileIds.length > 0) {
-            await cleanupOwnedOrphanDirectusFiles({
-                candidateFileIds: removedBodyFileIds,
-                ownerUserIds: [params.access.user.id],
-            });
-        }
     }
 }
 
@@ -572,13 +551,20 @@ async function syncArticleBodyVisibility(params: {
         params.input.is_public !== undefined ||
         params.input.status !== undefined
     ) {
-        await syncMarkdownFilesToVisibility(
-            String(
+        await syncMarkdownFileLifecycle({
+            previousMarkdown: String(params.target.body_markdown ?? ""),
+            nextMarkdown: String(
                 params.input.body_markdown ?? params.target.body_markdown ?? "",
             ),
-            params.access.user.id,
-            params.nextVisibility,
-        );
+            userId: params.access.user.id,
+            visibility: params.nextVisibility,
+            reference: {
+                ownerCollection: "app_articles",
+                ownerId: params.target.id,
+                ownerField: "body_markdown",
+                referenceKind: "markdown_asset",
+            },
+        });
     }
 }
 
@@ -604,6 +590,12 @@ async function syncExistingArticleCoverVisibility(params: {
             params.access.user.id,
             coverTitle,
             params.nextVisibility,
+            {
+                ownerCollection: "app_articles",
+                ownerId: params.target.id,
+                ownerField: "cover_file",
+                referenceKind: "structured_field",
+            },
         );
     }
 }
@@ -658,13 +650,15 @@ function buildWorkingDraftUpdatePayload(
 ): { payload: JsonObject; nextCoverFile: string | null } {
     const payload: JsonObject = {};
     const prevCoverFile = normalizeDirectusFileId(target.cover_file);
-    const newCoverFile = applyArticleBaseFields(
+    const coverFileResult = applyArticleBaseFields(
         payload,
         input as UpdateArticleInput,
         body,
         target,
     );
-    const nextCoverFile = newCoverFile ?? prevCoverFile;
+    const nextCoverFile = coverFileResult.coverFileTouched
+        ? coverFileResult.nextCoverFile
+        : prevCoverFile;
     payload.status = "draft";
     return { payload, nextCoverFile };
 }
@@ -713,12 +707,24 @@ async function handleWorkingDraftPut(
                 access.user.id,
                 coverTitle,
                 visibility,
+                {
+                    ownerCollection: "app_articles",
+                    ownerId: created.id,
+                    ownerField: "cover_file",
+                    referenceKind: "structured_field",
+                },
             );
         }
         await syncMarkdownFilesToVisibility(
             created.body_markdown,
             access.user.id,
             visibility,
+            {
+                ownerCollection: "app_articles",
+                ownerId: created.id,
+                ownerField: "body_markdown",
+                referenceKind: "markdown_asset",
+            },
         );
         await awaitCacheInvalidations(
             [
@@ -837,26 +843,38 @@ async function handleArticleDelete(
     target: OwnedArticleRecord,
 ): Promise<Response> {
     const id = target.id;
-    const coverFile = normalizeDirectusFileId(target.cover_file);
-    const bodyFileIds = extractDirectusAssetIdsFromMarkdown(
-        String(target.body_markdown ?? ""),
-    );
-    const relatedCommentCandidates =
-        await collectArticleCommentCleanupCandidates(id);
-    await deleteOne("app_articles", id);
-    const cleanupCandidates = mergeDirectusFileCleanupCandidates(
-        {
-            candidateFileIds: [
-                ...(coverFile ? [coverFile] : []),
-                ...bodyFileIds,
-            ],
-            ownerUserIds: [target.author_id],
-        },
-        relatedCommentCandidates,
-    );
-    if (cleanupCandidates.candidateFileIds.length > 0) {
-        await cleanupOwnedOrphanDirectusFiles(cleanupCandidates);
+    const commentRows = await readComments("app_article_comments", {
+        filter: { article_id: { _eq: id } } as JsonObject,
+        fields: ["id"],
+        limit: -1,
+    });
+    for (const comment of commentRows) {
+        await resourceLifecycle.releaseOwnerResources({
+            ownerCollection: "app_article_comments",
+            ownerId: String(comment.id),
+        });
+        await searchIndex.remove("comment", String(comment.id));
     }
+    await resourceLifecycle.releaseOwnerResources({
+        ownerCollection: "app_articles",
+        ownerId: id,
+    });
+    const summaryJobs = await readMany("app_ai_summary_jobs", {
+        filter: { article_id: { _eq: id } } as JsonObject,
+        fields: ["id"],
+        limit: 5000,
+    });
+    for (const job of summaryJobs) {
+        await deleteOne("app_ai_summary_jobs", String(job.id));
+    }
+    await deleteOne("app_articles", id);
+    await searchIndex.remove("article", id);
+    console.info("[audit] article.delete", {
+        articleId: id,
+        authorId: target.author_id,
+        releasedCommentCount: commentRows.length,
+        deletedSummaryJobCount: summaryJobs.length,
+    });
     await awaitCacheInvalidations(
         [
             cacheManager.invalidateByDomain("article-list"),

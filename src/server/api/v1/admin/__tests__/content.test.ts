@@ -6,18 +6,14 @@ import {
     parseResponseJson,
 } from "@/__tests__/helpers/mock-api-context";
 
-vi.mock("@/server/api/v1/shared", async (importOriginal) => {
-    const actual =
-        await importOriginal<typeof import("@/server/api/v1/shared")>();
-    return {
-        ...actual,
-        requireAdmin: vi.fn(),
-    };
-});
+vi.mock("@/server/api/v1/shared/auth", () => ({
+    requireAdmin: vi.fn(),
+}));
 
 vi.mock("@/server/directus/client", () => ({
     deleteOne: vi.fn(),
     readMany: vi.fn(),
+    readOneById: vi.fn(),
     runWithDirectusUserAccess: vi.fn(
         async (_token: string, task: () => Promise<unknown>) => await task(),
     ),
@@ -43,7 +39,12 @@ vi.mock("@/server/api/v1/shared/file-cleanup", () => ({
         ownerUserIds: [],
     }),
     collectDiaryFileIds: vi.fn().mockResolvedValue([]),
-    extractDirectusAssetIdsFromMarkdown: vi.fn(() => []),
+    extractDirectusAssetIdsFromMarkdown: vi.fn((markdown?: string | null) => {
+        const source = String(markdown ?? "");
+        return [...source.matchAll(/\/api\/v1\/assets\/([A-Za-z0-9-]+)/gu)].map(
+            (match) => match[1] ?? "",
+        );
+    }),
     mergeDirectusFileCleanupCandidates: vi.fn(
         (
             ...groups: Array<{
@@ -63,22 +64,72 @@ vi.mock("@/server/api/v1/shared/file-cleanup", () => ({
 }));
 
 vi.mock("@/server/api/v1/comments-shared", () => ({
-    deleteCommentWithDescendants: vi.fn().mockResolvedValue(undefined),
+    collectCommentDeletionTargets: vi.fn().mockResolvedValue([]),
+    deleteCollectedCommentTargets: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { requireAdmin } from "@/server/api/v1/shared";
-import { deleteOne, readMany, updateOne } from "@/server/directus/client";
-import { collectDiaryFileIds } from "@/server/api/v1/shared/file-cleanup";
-import { deleteCommentWithDescendants } from "@/server/api/v1/comments-shared";
+vi.mock("@/server/files/file-detach-jobs", () => ({
+    enqueueFileDetachJob: vi.fn().mockResolvedValue({
+        jobId: "detach-job-1",
+        status: "pending",
+        candidateFileIds: [],
+    }),
+}));
+
+vi.mock("@/server/files/resource-lifecycle", () => ({
+    resourceLifecycle: {
+        releaseOwnerResources: vi.fn().mockResolvedValue({
+            jobId: "release-job-1",
+            status: "pending",
+            candidateFileIds: [],
+            deletedReferences: 0,
+        }),
+        restoreQuarantinedFiles: vi.fn().mockResolvedValue({
+            requestedFileIds: [],
+            restoredFileIds: [],
+            skippedMissingFileIds: [],
+            skippedNotQuarantinedFileIds: [],
+            skippedUnreferencedFileIds: [],
+        }),
+    },
+}));
+
+vi.mock("@/server/application/shared/search-index", () => ({
+    searchIndex: {
+        remove: vi.fn().mockResolvedValue(undefined),
+    },
+}));
+
+import { requireAdmin } from "@/server/api/v1/shared/auth";
+import {
+    deleteOne,
+    readMany,
+    readOneById,
+    updateOne,
+} from "@/server/directus/client";
+import {
+    collectCommentDeletionTargets,
+    deleteCollectedCommentTargets,
+} from "@/server/api/v1/comments-shared";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
 import { handleAdminContent } from "@/server/api/v1/admin/content";
 
 const mockedRequireAdmin = vi.mocked(requireAdmin);
 const mockedReadMany = vi.mocked(readMany);
+const mockedReadOneById = vi.mocked(readOneById);
 const mockedUpdateOne = vi.mocked(updateOne);
 const mockedDeleteOne = vi.mocked(deleteOne);
-const mockedCollectDiaryFileIds = vi.mocked(collectDiaryFileIds);
-const mockedDeleteCommentWithDescendants = vi.mocked(
-    deleteCommentWithDescendants,
+const mockedCollectCommentDeletionTargets = vi.mocked(
+    collectCommentDeletionTargets,
+);
+const mockedDeleteCollectedCommentTargets = vi.mocked(
+    deleteCollectedCommentTargets,
+);
+const mockedReleaseOwnerResources = vi.mocked(
+    resourceLifecycle.releaseOwnerResources,
+);
+const mockedRestoreQuarantinedFiles = vi.mocked(
+    resourceLifecycle.restoreQuarantinedFiles,
 );
 
 function makeCtx(
@@ -170,7 +221,6 @@ describe("handleAdminContent diaries 权限收敛", () => {
 
         expect(response.status).toBe(404);
         expect(mockedDeleteOne).not.toHaveBeenCalled();
-        expect(mockedCollectDiaryFileIds).not.toHaveBeenCalled();
     });
 
     it("PATCH 公开日记可正常更新", async () => {
@@ -206,6 +256,12 @@ describe("handleAdminContent diaries 权限收敛", () => {
                 article_id: "article-1",
             },
         ] as never);
+        mockedCollectCommentDeletionTargets.mockResolvedValueOnce([
+            {
+                id: "comment-1",
+                body: "![img](/api/v1/assets/file-comment)",
+            },
+        ]);
 
         const ctx = makeCtx(
             "admin/content/article-comments/comment-1",
@@ -217,10 +273,100 @@ describe("handleAdminContent diaries 权限收敛", () => {
         );
 
         expect(response.status).toBe(200);
-        expect(mockedDeleteCommentWithDescendants).toHaveBeenCalledWith(
+        expect(mockedCollectCommentDeletionTargets).toHaveBeenCalledWith(
             "app_article_comments",
             "comment-1",
         );
+        expect(mockedReleaseOwnerResources).toHaveBeenCalledWith({
+            ownerCollection: "app_article_comments",
+            ownerId: "comment-1",
+        });
+        expect(mockedDeleteCollectedCommentTargets).toHaveBeenCalledWith(
+            "app_article_comments",
+            "comment-1",
+            expect.any(Array),
+        );
         expect(mockedDeleteOne).not.toHaveBeenCalled();
+    });
+
+    it("DELETE 文章时会先收集文件并在删除后 detach", async () => {
+        mockedReadOneById.mockResolvedValueOnce({
+            id: "article-1",
+            body_markdown:
+                "body ![img](/api/v1/assets/file-body) ![img](/api/v1/assets/file-body-2)",
+            cover_file: "file-cover",
+        } as never);
+        mockedReadMany.mockResolvedValueOnce([]);
+
+        const ctx = makeCtx("admin/content/articles/article-1", "DELETE");
+        const response = await handleAdminContent(
+            ctx as unknown as APIContext,
+            ["content", "articles", "article-1"],
+        );
+
+        expect(response.status).toBe(200);
+        expect(mockedDeleteOne).toHaveBeenCalledWith(
+            "app_articles",
+            "article-1",
+        );
+        expect(mockedReleaseOwnerResources).toHaveBeenCalledWith({
+            ownerCollection: "app_articles",
+            ownerId: "article-1",
+        });
+    });
+
+    it("POST 管理员恢复隔离文件时走生命周期恢复用例", async () => {
+        mockedRestoreQuarantinedFiles.mockResolvedValueOnce({
+            requestedFileIds: ["file-1"],
+            restoredFileIds: ["file-1"],
+            skippedMissingFileIds: [],
+            skippedNotQuarantinedFileIds: [],
+            skippedUnreferencedFileIds: [],
+        });
+
+        const ctx = makeCtx("admin/content/files/file-1/restore", "POST");
+        const response = await handleAdminContent(
+            ctx as unknown as APIContext,
+            ["content", "files", "file-1", "restore"],
+        );
+
+        expect(response.status).toBe(200);
+        expect(mockedRestoreQuarantinedFiles).toHaveBeenCalledWith({
+            fileIds: ["file-1"],
+            requireReference: true,
+        });
+        await expect(
+            parseResponseJson<{ restored: boolean; file_id: string }>(response),
+        ).resolves.toMatchObject({
+            restored: true,
+            file_id: "file-1",
+        });
+    });
+
+    it("POST 管理员恢复无有效引用的隔离文件时返回 409", async () => {
+        mockedRestoreQuarantinedFiles.mockResolvedValueOnce({
+            requestedFileIds: ["file-1"],
+            restoredFileIds: [],
+            skippedMissingFileIds: [],
+            skippedNotQuarantinedFileIds: [],
+            skippedUnreferencedFileIds: ["file-1"],
+        });
+
+        const ctx = makeCtx("admin/content/files/file-1/restore", "POST");
+        const response = await handleAdminContent(
+            ctx as unknown as APIContext,
+            ["content", "files", "file-1", "restore"],
+        );
+
+        expect(response.status).toBe(409);
+        await expect(
+            parseResponseJson<{
+                ok: boolean;
+                error: { message: string };
+            }>(response),
+        ).resolves.toMatchObject({
+            ok: false,
+            error: { message: "文件没有有效引用，已阻止误恢复" },
+        });
     });
 });

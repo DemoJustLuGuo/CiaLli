@@ -5,12 +5,15 @@ vi.mock("@/server/directus/client", () => ({
     countItemsGroupedByField: vi.fn(),
     createOne: vi.fn(),
     deleteOne: vi.fn(),
+    deleteDirectusFile: vi.fn(),
     readMany: vi.fn(),
     readOneById: vi.fn(),
+    runWithDirectusServiceAccess: vi.fn(
+        async (task: () => Promise<unknown>) => await task(),
+    ),
 }));
 
 vi.mock("@/server/api/v1/shared/file-cleanup", () => ({
-    cleanupOwnedOrphanDirectusFiles: vi.fn().mockResolvedValue([]),
     extractDirectusAssetIdsFromMarkdown: vi.fn((value: string) => {
         const ids: string[] = [];
         if (value.includes("root-file")) ids.push("root-file");
@@ -28,25 +31,30 @@ vi.mock("@/server/markdown/render", () => ({
     renderMarkdown: vi.fn().mockResolvedValue("<p>preview</p>"),
 }));
 
-vi.mock("@/server/api/v1/shared", () => ({
-    buildCommentTree: vi.fn(),
+vi.mock("@/server/api/v1/shared/auth", () => ({
     requireAccess: vi.fn(),
+}));
+
+vi.mock("@/server/api/v1/shared/comments", () => ({
+    buildCommentTree: vi.fn(),
 }));
 
 vi.mock("@/server/api/v1/shared/author-cache", () => ({
     getAuthorBundle: vi.fn(),
 }));
 
-import { deleteOne, readMany, readOneById } from "@/server/directus/client";
-import { cleanupOwnedOrphanDirectusFiles } from "@/server/api/v1/shared/file-cleanup";
+import {
+    deleteDirectusFile,
+    deleteOne,
+    readMany,
+    readOneById,
+} from "@/server/directus/client";
 import { deleteCommentWithDescendants } from "@/server/api/v1/comments-shared";
 
+const mockedDeleteDirectusFile = vi.mocked(deleteDirectusFile);
 const mockedDeleteOne = vi.mocked(deleteOne);
 const mockedReadMany = vi.mocked(readMany);
 const mockedReadOneById = vi.mocked(readOneById);
-const mockedCleanupOwnedOrphanDirectusFiles = vi.mocked(
-    cleanupOwnedOrphanDirectusFiles,
-);
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -94,9 +102,6 @@ describe("deleteCommentWithDescendants", () => {
             "app_article_comments",
             "root",
         );
-        expect(mockedCleanupOwnedOrphanDirectusFiles).toHaveBeenCalledWith({
-            candidateFileIds: ["root-file", "child-file", "grand-file"],
-            ownerUserIds: ["root-user", "child-user", "grand-user"],
-        });
+        expect(mockedDeleteDirectusFile).not.toHaveBeenCalled();
     });
 });

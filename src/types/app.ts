@@ -1,3 +1,5 @@
+import type { UploadPurpose } from "@/constants/upload-limits";
+
 export type AppStatus = "draft" | "published" | "archived";
 export type ArticleSummarySource = "none" | "manual" | "ai";
 export type AiSummaryJobStatus =
@@ -6,6 +8,11 @@ export type AiSummaryJobStatus =
     | "succeeded"
     | "failed"
     | "canceled"
+    | "skipped";
+export type FileDetachJobStatus =
+    | "pending"
+    | "processing"
+    | "succeeded"
     | "skipped";
 export type AiSummaryJobKind =
     | "on_publish"
@@ -23,6 +30,34 @@ export type SocialLink = {
 export type CommentStatus = "published" | "hidden" | "archived";
 
 export type AppRole = "admin" | "member";
+export type AppFileLifecycle =
+    | "temporary"
+    | "attached"
+    | "detached"
+    | "quarantined"
+    | "deleting"
+    | "deleted"
+    | "delete_failed"
+    | "protected";
+export type AppFileReferenceKind =
+    | "structured_field"
+    | "markdown_asset"
+    | "settings_asset";
+export type AppFileReferenceVisibility = "private" | "public";
+
+export type ResourceReferenceSyncJobReference = {
+    ownerField: string;
+    referenceKind: AppFileReferenceKind;
+    fileIds: string[];
+};
+
+export type ResourceReferenceSyncJobPayload = {
+    ownerCollection: string;
+    ownerId: string;
+    ownerUserId: string | null;
+    visibility: AppFileReferenceVisibility;
+    references: ResourceReferenceSyncJobReference[];
+};
 
 export type AppPermissionKey =
     | "can_publish_articles"
@@ -135,6 +170,41 @@ export type AppAiSummaryJob = {
     result_summary: string | null;
 };
 
+export type AppFileDetachJob = {
+    id: string;
+    status: FileDetachJobStatus;
+    source_type: string;
+    source_id: string | null;
+    candidate_file_ids: string[] | ResourceReferenceSyncJobPayload | null;
+    detached_file_ids: string[] | null;
+    skipped_referenced_file_ids: string[] | null;
+    attempts: number;
+    scheduled_at: string | null;
+    leased_until: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+    error_code: string | null;
+    error_message: string | null;
+    sort: number | null;
+    user_created: string | null;
+    date_created: string | null;
+    user_updated: string | null;
+    date_updated: string | null;
+};
+
+export type AppFileReference = {
+    id: string;
+    file_id: string;
+    owner_collection: string;
+    owner_id: string;
+    owner_field: string;
+    reference_kind: AppFileReferenceKind;
+    owner_user_id: string | { id?: string } | null;
+    visibility: AppFileReferenceVisibility;
+    created_at: string | null;
+    updated_at: string | null;
+};
+
 export type AppDiary = {
     id: string;
     short_id: string | null;
@@ -170,6 +240,14 @@ export type AppFriend = {
     avatar_file: string | null;
     tags: string[] | null;
     is_public: boolean;
+    date_created: string | null;
+    date_updated: string | null;
+};
+
+export type AppAnimeEntry = {
+    id: string;
+    author_id: string;
+    cover_file: string | null;
     date_created: string | null;
     date_updated: string | null;
 };
@@ -312,7 +390,12 @@ export type AppUser = {
     status?: string | null;
     role: string | { id?: string; name?: string } | null;
     policies?: Array<
-        string | { id?: string; name?: string; policy?: string }
+        | string
+        | {
+              id?: string;
+              name?: string;
+              policy?: string | { id?: string; name?: string };
+          }
     > | null;
 };
 
@@ -321,8 +404,21 @@ export type AppFile = {
     title: string | null;
     type: string | null;
     filename_download: string | null;
+    date_created: string | null;
+    created_on?: string | null;
+    date_updated?: string | null;
+    modified_on?: string | null;
     app_owner_user_id?: string | { id?: string } | null;
+    app_upload_purpose?: UploadPurpose | null;
     app_visibility?: "private" | "public" | null;
+    app_lifecycle?: AppFileLifecycle | null;
+    app_detached_at?: string | null;
+    app_quarantined_at?: string | null;
+    app_deleted_at?: string | null;
+    app_delete_attempts?: number | null;
+    app_delete_next_retry_at?: string | null;
+    app_delete_last_error?: string | null;
+    app_delete_dead_lettered_at?: string | null;
     uploaded_by?: string | { id?: string } | null;
     modified_by?: string | { id?: string } | null;
 };

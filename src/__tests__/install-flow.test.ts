@@ -18,8 +18,10 @@ function createFakeDeps() {
         async runCommand(command: string, args: string[]) {
             const key = `${command} ${args.join(" ")}`;
             commands.push(key);
-            if (responses.has(key)) {
-                return responses.get(key) || "";
+            for (const [pattern, value] of responses) {
+                if (key.includes(pattern)) {
+                    return value;
+                }
             }
             if (key.includes("docker info")) {
                 return "Server Version: 27";
@@ -46,12 +48,15 @@ function createFakeDeps() {
             ) {
                 return "";
             }
+            if (key.includes("select id from directus_roles where name =")) {
+                return "role-uuid";
+            }
             if (
                 key.includes(
-                    "docker compose --env-file /repo/.env -f docker-compose.yml exec -T postgres sh -lc",
+                    "select id from directus_users where lower(email) = lower",
                 )
             ) {
-                return "role-uuid";
+                return "";
             }
             return "";
         },
@@ -74,6 +79,8 @@ function createFakeDeps() {
             }
             return existingPaths.has(targetPath);
         },
+        // Test installer flow by matching the handful of Directus bootstrap endpoints it calls.
+        // eslint-disable-next-line complexity
         fetch: vi.fn(async (url: string, init?: RequestInit) => {
             if (url === "http://127.0.0.1:8055/server/health") {
                 return new Response(JSON.stringify({ ok: true }), {
@@ -90,22 +97,91 @@ function createFakeDeps() {
                     { status: 200 },
                 );
             }
-            if (url === "http://127.0.0.1:8055/users/me?fields=id") {
+            if (
+                url === "http://127.0.0.1:8055/policies" &&
+                init?.method === "POST"
+            ) {
                 return new Response(
                     JSON.stringify({
                         data: {
-                            id: "admin-user-id",
+                            id: `policy-${writes.length}`,
                         },
                     }),
                     { status: 200 },
                 );
             }
             if (
-                url === "http://127.0.0.1:8055/users/admin-user-id" &&
+                url === "http://127.0.0.1:8055/permissions" &&
+                init?.method === "POST"
+            ) {
+                return new Response(
+                    JSON.stringify({ data: { id: "permission-id" } }),
+                    {
+                        status: 200,
+                    },
+                );
+            }
+            if (
+                String(url).startsWith(
+                    "http://127.0.0.1:8055/permissions?filter%5Bcollection%5D%5B_eq%5D=app_friends",
+                )
+            ) {
+                return new Response(
+                    JSON.stringify({
+                        data: [
+                            {
+                                id: "public-friends-permission",
+                                policy: {
+                                    name: "$t:public_label",
+                                },
+                            },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            if (
+                url ===
+                    "http://127.0.0.1:8055/permissions/public-friends-permission" &&
                 init?.method === "PATCH"
             ) {
                 return new Response(
-                    JSON.stringify({ data: { id: "admin-user-id" } }),
+                    JSON.stringify({
+                        data: {
+                            id: "public-friends-permission",
+                        },
+                    }),
+                    { status: 200 },
+                );
+            }
+            if (
+                url === "http://127.0.0.1:8055/users" &&
+                init?.method === "POST"
+            ) {
+                return new Response(
+                    JSON.stringify({ data: { id: "service-user-id" } }),
+                    {
+                        status: 200,
+                    },
+                );
+            }
+            if (
+                url === "http://127.0.0.1:8055/users/service-user-id" &&
+                init?.method === "PATCH"
+            ) {
+                return new Response(
+                    JSON.stringify({ data: { id: "service-user-id" } }),
+                    {
+                        status: 200,
+                    },
+                );
+            }
+            if (
+                url === "http://127.0.0.1:8055/users/seed-admin-id" &&
+                init?.method === "PATCH"
+            ) {
+                return new Response(
+                    JSON.stringify({ data: { id: "seed-admin-id" } }),
                     {
                         status: 200,
                     },
@@ -192,7 +268,10 @@ describe("installer flow", () => {
             ),
         ).toBe(true);
         expect(writes).toHaveLength(2);
-        expect(writes.at(-1)?.contents).toContain("DIRECTUS_STATIC_TOKEN=");
+        expect(writes.at(-1)?.contents).toContain("DIRECTUS_WEB_STATIC_TOKEN=");
+        expect(writes.at(-1)?.contents).toContain(
+            "DIRECTUS_WORKER_STATIC_TOKEN=",
+        );
         expect(writes.at(-1)?.contents).toContain("DIRECTUS_ADMIN_PASSWORD=");
         expect(writes.at(-1)?.contents).toContain("POSTGRES_USER=dbu_");
         expect(writes.at(-1)?.contents).toContain("MINIO_ROOT_USER=minio_");
@@ -236,6 +315,42 @@ describe("installer flow", () => {
         ).toBe(true);
     });
 
+    it("reuses an existing seeded admin by resetting its password", async () => {
+        const { commands, deps, responses } = createFakeDeps();
+
+        responses.set(
+            "select id from directus_users where lower(email) = lower('admin@example.com') limit 1",
+            "seed-admin-id",
+        );
+
+        await runInstallFlow(
+            {
+                command: "install",
+                lang: "en",
+                siteUrl: "https://example.com",
+                envFile: null,
+                interactive: false,
+                reset: false,
+            },
+            deps,
+        );
+
+        expect(
+            commands.some((command) =>
+                command.includes(
+                    "npx directus users passwd --email admin@example.com --password ",
+                ),
+            ),
+        ).toBe(true);
+        expect(
+            commands.some((command) =>
+                command.includes(
+                    "npx directus users create --email admin@example.com --password ",
+                ),
+            ),
+        ).toBe(false);
+    });
+
     it("prompts for language before site url in interactive mode", async () => {
         const { deps, promptAnswers, prompts } = createFakeDeps();
         promptAnswers.push("1", "https://example.com");
@@ -254,7 +369,50 @@ describe("installer flow", () => {
 
         expect(prompts).toHaveLength(2);
         expect(prompts[0]).toContain("1. English");
-        expect(prompts[1]).toContain("Public site URL");
+        expect(prompts[1]).toContain("Public site root URL");
+    });
+
+    it("normalizes localhost https site url to browser-testable http", async () => {
+        const { deps, logs, writes } = createFakeDeps();
+
+        await runInstallFlow(
+            {
+                command: "install",
+                lang: "zh_CN",
+                siteUrl: "https://localhost",
+                envFile: null,
+                interactive: false,
+                reset: false,
+            },
+            deps,
+        );
+
+        expect(writes.at(-1)?.contents).toContain(
+            "APP_PUBLIC_BASE_URL=http://localhost",
+        );
+        expect(
+            logs.some((message) =>
+                message.includes("主站入口：http://localhost"),
+            ),
+        ).toBe(true);
+    });
+
+    it("rejects site URLs that are not root public URLs", async () => {
+        const { deps } = createFakeDeps();
+
+        await expect(
+            runInstallFlow(
+                {
+                    command: "install",
+                    lang: "en",
+                    siteUrl: "https://example.com/demo",
+                    envFile: null,
+                    interactive: false,
+                    reset: false,
+                },
+                deps,
+            ),
+        ).rejects.toThrow("The site URL is invalid");
     });
 
     it("refuses existing installations without reset", async () => {
@@ -319,7 +477,7 @@ describe("installer flow", () => {
         ).toBe(true);
     });
 
-    it("fails when static token persistence request fails", async () => {
+    it("fails when Directus service credential provisioning fails", async () => {
         const { deps } = createFakeDeps();
         deps.fetch = vi.fn(async (url, init) => {
             if (url === "http://127.0.0.1:8055/server/health") {
@@ -337,19 +495,9 @@ describe("installer flow", () => {
                     { status: 200 },
                 );
             }
-            if (url === "http://127.0.0.1:8055/users/me?fields=id") {
-                return new Response(
-                    JSON.stringify({
-                        data: {
-                            id: "admin-user-id",
-                        },
-                    }),
-                    { status: 200 },
-                );
-            }
             if (
-                url === "http://127.0.0.1:8055/users/admin-user-id" &&
-                init?.method === "PATCH"
+                url === "http://127.0.0.1:8055/policies" &&
+                init?.method === "POST"
             ) {
                 return new Response("boom", { status: 500 });
             }
@@ -368,6 +516,6 @@ describe("installer flow", () => {
                 },
                 deps,
             ),
-        ).rejects.toThrow("Failed to persist Directus static token");
+        ).rejects.toThrow("Failed to provision Directus service credentials");
     });
 });

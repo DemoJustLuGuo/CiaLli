@@ -6,7 +6,7 @@
 
 - `proxy`：统一处理站点入口与 HTTPS 终止
 - `web`：Astro Node 服务
-- `worker`：AI Summary Worker
+- `worker`：AI Summary Worker + File GC
 - `directus`：CMS 与 API
 - `postgres`：Directus 主数据库
 - `redis`：缓存、限流与分布式刷新协调
@@ -30,9 +30,21 @@ Directus 后台默认只绑定到 `127.0.0.1:8055`，不直接暴露公网。
 5. 当前运行时要求的环境变量为：
    `APP_PUBLIC_BASE_URL`
    `DIRECTUS_URL`
-   `DIRECTUS_STATIC_TOKEN`
-   `BANGUMI_TOKEN_ENCRYPTION_KEY`
+   `DIRECTUS_WEB_STATIC_TOKEN`
+   `DIRECTUS_WORKER_STATIC_TOKEN`
+   `APP_SECRET_ENCRYPTION_KEY`
    `AI_SUMMARY_INTERNAL_SECRET`
+   `AI_SUMMARY_PROVIDER_TIMEOUT_MS`（可选，默认 `90000`）
+   `FILE_GC_INTERVAL_MS`（可选，默认 `900000`）
+   `FILE_GC_RETENTION_HOURS`（可选，默认 `168`）
+   `FILE_GC_QUARANTINE_DAYS`（可选，默认 `7`）
+   `FILE_GC_BATCH_SIZE`（可选，默认 `200`）
+   `FILE_GC_DELETE_MAX_ATTEMPTS`（可选，默认 `6`）
+   `FILE_DETACH_JOB_INTERVAL_MS`（可选，默认 `60000`）
+   `FILE_DETACH_JOB_BATCH_SIZE`（可选，默认 `50`）
+   `FILE_DETACH_JOB_LEASE_SECONDS`（可选，默认 `300`）
+   `FILE_LIFECYCLE_RECONCILE_INTERVAL_MS`（可选，默认 `86400000`）
+   `FILE_REFERENCE_SHADOW_INTERVAL_MS`（可选，默认 `86400000`）
    `DIRECTUS_SECRET`
    `POSTGRES_USER`
    `POSTGRES_DB`
@@ -43,15 +55,16 @@ Directus 后台默认只绑定到 `127.0.0.1:8055`，不直接暴露公网。
    `STORAGE_S3_SECRET`
 6. 安装器还会把 `DIRECTUS_ADMIN_EMAIL` 与 `DIRECTUS_ADMIN_PASSWORD` 一并写入 `.env`，用于首次安装后的后台登录与运维排障；运行时服务本身不依赖这两项。
 7. `PUBLIC_ASSET_BASE_URL` 是唯一保留的可选环境变量；留空时继续统一走站内 BFF 代理资源地址。
-8. `pnpm check:env` 只负责校验已存在的 `.env`；首次安装所需密钥、账号名与静态 token 都由安装器生成并写入。
+8. `CADDY_ADDITIONAL_SITE_ADDRESS` 是可选的 Caddy 追加入口；生产通常留空，本地开发 override 默认使用 `http://` 以允许局域网设备通过 HTTP 访问。
+9. `pnpm check:env` 只负责校验已存在的 `.env`；首次安装所需密钥、账号名与 web / worker 静态 token 都由安装器生成并写入。
+10. `APP_PUBLIC_BASE_URL` 是站点唯一公网入口真源，同时驱动 Astro `site`、sitemap、RSS、canonical 与 Caddy 反向代理入口；它必须是站点根 URL，不支持子路径部署。
 
 ## 全局安装器
 
 首次部署推荐使用全局安装器：
 
 ```bash
-pnpm install -g .
-cialli-install install
+pnpm install -g . && cialli-install install --site-url https://example.com
 ```
 
 安装器会自动完成：
@@ -62,7 +75,7 @@ cialli-install install
 - 构建 `web` / `worker`
 - 启动基础设施与 Directus
 - 使用生成的管理员账户完成 Directus 初始化
-- 自动生成并回填 `DIRECTUS_STATIC_TOKEN`
+- 自动生成并回填 `DIRECTUS_WEB_STATIC_TOKEN` 与 `DIRECTUS_WORKER_STATIC_TOKEN`
 - 将所选语言写入站点默认语言设置
 - 启动 `web`、`worker`、`proxy`
 - 在 CLI 中按分组展示所有生成值，并提示可随时在 `.env` 查看
@@ -75,14 +88,39 @@ cialli-install install \
   --site-url https://example.com
 ```
 
+若通过仓库脚本调用本地安装器，可直接写：
+
+```bash
+pnpm install:host --reset --lang zh_CN --site-url https://example.com
+```
+
+当前安装器也兼容部分 shell / 包管理器习惯性的参数分隔写法：
+
+```bash
+pnpm install:host -- --reset --lang zh_CN --site-url https://example.com
+```
+
 如果当前目录已有 `.env`、Compose volumes 或历史容器记录，安装器默认拒绝覆盖；显式传入 `--reset` 才会清空当前 Compose 资源并重装。
+
+本机手动 QA 建议使用 HTTP 本地入口，例如：
+
+```bash
+pnpm install:host --reset --lang zh_CN --site-url http://localhost
+```
+
+如果传入 `https://localhost`、`https://127.0.0.1` 或其他回环地址，安装器会自动改写为对应的 `http://` 入口，避免浏览器被本地自签证书拦截。
 
 建议在启动前先执行：
 
 ```bash
-git lfs install
 git lfs pull
 ```
+
+说明：
+
+- 安装器本身会检查 Git LFS 是否可用，并在 seed 仍是 pointer 时直接报错
+- 某些已有 Git hooks 的仓库中，`git lfs install` 可能因为 `pre-push` hook 已存在而返回非零；这不影响继续执行 `git lfs pull`
+- 如确实需要补装 Git LFS hooks，请按 `git lfs update --manual` 的提示合并，或在确认会覆盖现有 hook 时显式使用 `git lfs update --force`
 
 已有 `.env` 的环境可继续手动运行校验；本地环境默认会放宽对占位值的检查。如需在 CI 或正式发版前强制按生产标准校验，可使用：
 
@@ -97,31 +135,13 @@ pnpm docker:build
 pnpm docker:up
 ```
 
-仓库提供 [docker-compose.override.yml](/Users/uednd/code/CiaLli-Channel/docker-compose.override.yml) 作为本地开发覆盖配置。使用默认 `docker compose up` 时，`web` 会以 `pnpm dev` 运行并挂载源码，`worker` 会以 `tsx watch` 运行，代码改动会自动热更新或重启。
+仓库提供 [docker-compose.override.yml](/Users/uednd/code/CiaLli-Channel/docker-compose.override.yml) 作为本地开发覆盖配置。使用默认 `docker compose up` 时，`web` 会以 `pnpm dev` 运行并挂载源码，`worker` 会以 `tsx watch` 运行，代码改动会自动热更新或重启。该入口仅用于本地开发，不作为正式生产部署流程。
 
-## 生产启动
+本地开发覆盖配置会让 `proxy` 额外接受任意 HTTP Host，因此同一局域网中的其他设备可通过 `http://<本机局域网IP>/` 访问主站。若容器已启动但其他设备仍无法连接，请先确认宿主机系统防火墙允许 80 端口入站。
 
-生产环境需要显式绕过本地 override，只加载主 [docker-compose.yml](/Users/uednd/code/CiaLli-Channel/docker-compose.yml)：
+## 生产部署约定
 
-```bash
-pnpm docker:build
-pnpm docker:up:prod
-```
-
-等价的原生命令是：
-
-```bash
-docker compose -f docker-compose.yml up -d
-```
-
-首次启动会自动完成：
-
-- PostgreSQL 初始化
-- Redis 启动
-- MinIO bucket 创建
-- 演示 seed 恢复（仅空卷首次启动）
-- Directus 数据库迁移
-- 安装器通过 CLI 创建管理员账户并写入服务端静态 token
+正式部署流程统一使用安装器。安装器内部仍基于主 [docker-compose.yml](/Users/uednd/code/CiaLli-Channel/docker-compose.yml) 启动生产服务，并自动绕过本地开发用 override 配置。
 
 ## 演示种子与后台账号
 
@@ -129,6 +149,11 @@ docker compose -f docker-compose.yml up -d
 
 - PostgreSQL 业务与 Directus 系统表
 - MinIO bucket 中的对象资源
+
+当前仓库的 MinIO demo seed 允许为空：
+
+- 当 `seed/metadata.json` 中 `minio.objectCount=0` 时，`seed/minio/demo-bucket` 缺失会被视为“空 seed”
+- 若未来 `minio.objectCount > 0`，则该目录仍必须存在并包含对应对象
 
 恢复只会在以下条件同时成立时触发：
 
@@ -139,9 +164,11 @@ docker compose -f docker-compose.yml up -d
 
 请注意：
 
-- 当前仓库内的 seed 已是干净产物：不包含可直接登录的固定管理员账户，也不包含可复用的静态 token 或会话
-- 管理员账户由安装器在 restore 后自动生成并写入 `.env`，而不是来自 seed
+- 当前 `seed/metadata.json` 记录的 MinIO `objectCount` 为 `1`，对应仓库中的 `seed/minio/demo-bucket/.gitkeep`
+- PostgreSQL seed 保留 `admin@example.com` 这条管理员记录以承接业务外键；安装器会在 restore 后确保该管理员存在并重置为新的随机密码
 - AI 运行时密钥、基础设施账号名与内部调用密钥都由安装器写入 `.env`
+- `APP_SECRET_ENCRYPTION_KEY` 是运行时唯一生效的通用加密密钥变量，必须提供 base64 编码的 32-byte key
+- PostgreSQL seed dump 仍通过 Git LFS 分发，部署前应先执行 `git lfs pull`
 - 如果需要重新触发演示恢复，请先删除 `postgres_data` 与 `minio_data` 对应的 Docker volume，或使用 `cialli-install install --reset`
 
 ## 访问
@@ -149,6 +176,8 @@ docker compose -f docker-compose.yml up -d
 - 主站通过 `proxy` 对外暴露 `80/443`
 - Directus 后台仅绑定 `127.0.0.1:8055`
 - MinIO Console 仅绑定 `127.0.0.1:9001`
+
+默认本地开发栈支持通过 `http://<本机局域网IP>/` 从同一局域网访问主站；正式生产部署仍应使用 `APP_PUBLIC_BASE_URL` 对应的域名或公开 IP 作为入口。
 
 如需访问 Directus 后台，建议使用 SSH 隧道或在服务器本机浏览器访问。
 
@@ -228,10 +257,11 @@ pnpm seed:verify
 `pnpm seed:verify` 会检查：
 
 - `seed/postgres/demo.dump` 存在且不是 Git LFS pointer
-- `seed/minio/demo-bucket/**` 中的对象不是 Git LFS pointer
+- `seed/minio/demo-bucket/**` 中的对象不是 Git LFS pointer；当 `minio.objectCount=0` 时允许该目录缺失并按空 seed 校验
 - `seed/metadata.json` 中记录的 dump 大小与对象数量与实际文件一致
 - `directus/schema/app-schema.json` 是有效的 Directus schema 快照
 - 临时还原 `seed/postgres/demo.dump` 后，不存在 `demo-admin@example.com`
+- 临时还原后不存在 `status='suspended' and email like 'disabled+%@seed.invalid'` 的占位管理员
 - 临时还原的 `directus_users.token` 全部为空
 - 临时还原的 `directus_sessions` 为空
 

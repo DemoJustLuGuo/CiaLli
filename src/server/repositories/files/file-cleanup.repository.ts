@@ -1,7 +1,10 @@
+import type { AppFile } from "@/types/app";
 import type { JsonObject } from "@/types/json";
+import type { DeleteDirectusFileResult } from "@/server/directus/client";
 import { deleteDirectusFile, readMany } from "@/server/directus/client";
 import {
     extractDirectusAssetIdsFromMarkdown,
+    extractDirectusFileIdsFromUnknown,
     normalizeDirectusFileId,
     toUniqueFileIds,
 } from "@/server/api/v1/shared/file-cleanup-reference-utils";
@@ -12,6 +15,7 @@ type SupportedReferenceCollection =
     | "app_user_profiles"
     | "app_articles"
     | "app_albums"
+    | "app_anime_entries"
     | "app_friends"
     | "app_album_photos"
     | "app_diary_images"
@@ -28,14 +32,30 @@ export type MarkdownReferenceTarget = {
         | "app_articles"
         | "app_article_comments"
         | "app_diary_comments"
-        | "app_diaries";
+        | "app_diaries"
+        | "app_site_announcements";
     field: "body_markdown" | "body" | "content";
+};
+
+type StaleFileGcCandidate = {
+    id: string;
+    date_created?: string | null;
+    created_on?: string | null;
+    app_lifecycle?: AppFile["app_lifecycle"];
+    app_detached_at?: string | null;
+    app_quarantined_at?: string | null;
+    app_deleted_at?: string | null;
+    app_delete_attempts?: number | null;
+    app_delete_next_retry_at?: string | null;
+    app_delete_last_error?: string | null;
+    app_delete_dead_lettered_at?: string | null;
 };
 
 export const STRUCTURED_REFERENCE_TARGETS: StructuredReferenceTarget[] = [
     { collection: "app_user_profiles", field: "header_file" },
     { collection: "app_articles", field: "cover_file" },
     { collection: "app_albums", field: "cover_file" },
+    { collection: "app_anime_entries", field: "cover_file" },
     { collection: "app_friends", field: "avatar_file" },
     { collection: "app_album_photos", field: "file_id" },
     { collection: "app_diary_images", field: "file_id" },
@@ -48,40 +68,79 @@ export const MARKDOWN_REFERENCE_TARGETS: MarkdownReferenceTarget[] = [
     { collection: "app_article_comments", field: "body" },
     { collection: "app_diary_comments", field: "body" },
     { collection: "app_diaries", field: "content" },
+    { collection: "app_site_announcements", field: "body_markdown" },
 ];
+
+const SITE_SETTINGS_REFERENCE_FIELDS = [
+    "settings_site",
+    "settings_nav",
+    "settings_home",
+    "settings_article",
+    "settings_other",
+] as const;
+
+function shouldStopCollecting(
+    candidates: Set<string> | null,
+    output: Set<string>,
+): boolean {
+    return Boolean(candidates && output.size >= candidates.size);
+}
+
+function collectReferencedIdsFromString(
+    value: string,
+    candidates: Set<string> | null,
+    output: Set<string>,
+    includeBareUuid: boolean,
+): void {
+    const found = extractDirectusFileIdsFromUnknown(value, {
+        includeBareUuid,
+    });
+    for (const fileId of found) {
+        if (!candidates || candidates.has(fileId)) {
+            output.add(fileId);
+        }
+    }
+}
 
 export function collectReferencedAssetIdsFromUnknown(
     value: unknown,
-    candidates: Set<string>,
+    candidates: Set<string> | null,
     output: Set<string>,
+    options: { includeBareUuid?: boolean } = { includeBareUuid: true },
 ): void {
-    if (output.size >= candidates.size) {
+    if (shouldStopCollecting(candidates, output)) {
         return;
     }
     if (typeof value === "string") {
-        const found = extractDirectusAssetIdsFromMarkdown(value);
-        for (const fileId of found) {
-            if (candidates.has(fileId)) {
-                output.add(fileId);
-            }
-        }
+        collectReferencedIdsFromString(
+            value,
+            candidates,
+            output,
+            options.includeBareUuid !== false,
+        );
         return;
     }
     if (Array.isArray(value)) {
         for (const item of value) {
-            collectReferencedAssetIdsFromUnknown(item, candidates, output);
-            if (output.size >= candidates.size) {
+            collectReferencedAssetIdsFromUnknown(
+                item,
+                candidates,
+                output,
+                options,
+            );
+            if (shouldStopCollecting(candidates, output)) {
                 return;
             }
         }
         return;
     }
-    if (value && typeof value === "object") {
-        for (const item of Object.values(value as Record<string, unknown>)) {
-            collectReferencedAssetIdsFromUnknown(item, candidates, output);
-            if (output.size >= candidates.size) {
-                return;
-            }
+    if (!value || typeof value !== "object") {
+        return;
+    }
+    for (const item of Object.values(value as Record<string, unknown>)) {
+        collectReferencedAssetIdsFromUnknown(item, candidates, output, options);
+        if (shouldStopCollecting(candidates, output)) {
+            return;
         }
     }
 }
@@ -194,21 +253,171 @@ export async function readReferencedIdsInSiteSettingsFromRepository(
                 { status: { _eq: "published" } },
             ],
         } as JsonObject,
-        fields: ["settings"],
+        fields: [...SITE_SETTINGS_REFERENCE_FIELDS],
         sort: ["-date_updated", "-date_created"],
         limit: 1,
     });
     for (const row of rows as Array<Record<string, unknown>>) {
-        collectReferencedAssetIdsFromUnknown(
-            row.settings,
-            candidateSet,
-            referenced,
-        );
+        for (const field of SITE_SETTINGS_REFERENCE_FIELDS) {
+            collectReferencedAssetIdsFromUnknown(
+                row[field],
+                candidateSet,
+                referenced,
+            );
+            if (referenced.size >= candidateSet.size) {
+                break;
+            }
+        }
         if (referenced.size >= candidateSet.size) {
             break;
         }
     }
     return referenced;
+}
+
+export async function readAllReferencedIdsInSiteSettingsFromRepository(): Promise<
+    Set<string>
+> {
+    const referenced = new Set<string>();
+    const rows = await readMany("app_site_settings", {
+        filter: {
+            _and: [
+                { key: { _eq: "default" } },
+                { status: { _eq: "published" } },
+            ],
+        } as JsonObject,
+        fields: [...SITE_SETTINGS_REFERENCE_FIELDS],
+        sort: ["-date_updated", "-date_created"],
+        limit: 1,
+    });
+    for (const row of rows as Array<Record<string, unknown>>) {
+        for (const field of SITE_SETTINGS_REFERENCE_FIELDS) {
+            collectReferencedAssetIdsFromUnknown(row[field], null, referenced);
+        }
+    }
+    return referenced;
+}
+
+function normalizeReferenceOwnerText(value: unknown): string {
+    return String(value ?? "").trim();
+}
+
+function isSkippableReferenceScanError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /forbidden|permission|does not exist|not found/i.test(message);
+}
+
+function warnSkippedReferenceScan(params: {
+    collection: string;
+    field: string;
+    error: unknown;
+}): void {
+    console.warn("[file-cleanup] skip reference scan target", {
+        collection: params.collection,
+        field: params.field,
+        error:
+            params.error instanceof Error
+                ? params.error.message
+                : String(params.error),
+    });
+}
+
+async function readOwnerSourceReferencedIdsInSiteSettingsFromRepository(
+    ownerId: string,
+    output: Set<string>,
+): Promise<void> {
+    const rows = await readMany("app_site_settings", {
+        filter: {
+            _and: [{ key: { _eq: ownerId } }, { status: { _eq: "published" } }],
+        } as JsonObject,
+        fields: [...SITE_SETTINGS_REFERENCE_FIELDS],
+        sort: ["-date_updated", "-date_created"],
+        limit: 1,
+    });
+    for (const row of rows as Array<Record<string, unknown>>) {
+        for (const field of SITE_SETTINGS_REFERENCE_FIELDS) {
+            collectReferencedAssetIdsFromUnknown(row[field], null, output);
+        }
+    }
+}
+
+async function readOwnerSourceReferencedIdsInStructuredTargetsFromRepository(
+    ownerCollection: string,
+    ownerId: string,
+    output: Set<string>,
+): Promise<void> {
+    const targets = STRUCTURED_REFERENCE_TARGETS.filter(
+        (target) => target.collection === ownerCollection,
+    );
+    for (const target of targets) {
+        const rows = await readMany(target.collection, {
+            filter: { id: { _eq: ownerId } } as JsonObject,
+            fields: ["id", target.field],
+            limit: 1,
+        });
+        for (const row of rows as Array<Record<string, unknown>>) {
+            collectReferencedAssetIdsFromUnknown(
+                row[target.field],
+                null,
+                output,
+            );
+        }
+    }
+}
+
+async function readOwnerSourceReferencedIdsInMarkdownTargetsFromRepository(
+    ownerCollection: string,
+    ownerId: string,
+    output: Set<string>,
+): Promise<void> {
+    const targets = MARKDOWN_REFERENCE_TARGETS.filter(
+        (target) => target.collection === ownerCollection,
+    );
+    for (const target of targets) {
+        const rows = await readMany(target.collection, {
+            filter: { id: { _eq: ownerId } } as JsonObject,
+            fields: ["id", target.field],
+            limit: 1,
+        });
+        for (const row of rows as Array<Record<string, unknown>>) {
+            collectReferencedAssetIdsFromUnknown(
+                row[target.field],
+                null,
+                output,
+                { includeBareUuid: false },
+            );
+        }
+    }
+}
+
+export async function readOwnerSourceReferencedFileIdsFromRepository(params: {
+    ownerCollection: string;
+    ownerId: string;
+}): Promise<string[]> {
+    const ownerCollection = normalizeReferenceOwnerText(params.ownerCollection);
+    const ownerId = normalizeReferenceOwnerText(params.ownerId);
+    if (!ownerCollection || !ownerId) {
+        return [];
+    }
+
+    const referenced = new Set<string>();
+    if (ownerCollection === "app_site_settings") {
+        await readOwnerSourceReferencedIdsInSiteSettingsFromRepository(
+            ownerId,
+            referenced,
+        );
+    }
+    await readOwnerSourceReferencedIdsInStructuredTargetsFromRepository(
+        ownerCollection,
+        ownerId,
+        referenced,
+    );
+    await readOwnerSourceReferencedIdsInMarkdownTargetsFromRepository(
+        ownerCollection,
+        ownerId,
+        referenced,
+    );
+    return [...referenced].sort();
 }
 
 export async function readReferencedIdsInStructuredTargetFromRepository(
@@ -219,25 +428,68 @@ export async function readReferencedIdsInStructuredTargetFromRepository(
     if (fileIds.length === 0) {
         return found;
     }
-    let offset = 0;
-    while (true) {
-        const rows = await readMany(target.collection, {
-            filter: { [target.field]: { _in: fileIds } } as JsonObject,
-            fields: [target.field],
-            limit: REFERENCE_PAGE_SIZE,
-            offset,
-        });
-        const list = rows as Array<Record<string, unknown>>;
-        for (const row of list) {
-            const fileId = normalizeDirectusFileId(row[target.field]);
-            if (fileId) {
-                found.add(fileId);
+    try {
+        let offset = 0;
+        while (true) {
+            const rows = await readMany(target.collection, {
+                filter: { [target.field]: { _in: fileIds } } as JsonObject,
+                fields: [target.field],
+                limit: REFERENCE_PAGE_SIZE,
+                offset,
+            });
+            const list = rows as Array<Record<string, unknown>>;
+            for (const row of list) {
+                const fileId = normalizeDirectusFileId(row[target.field]);
+                if (fileId) {
+                    found.add(fileId);
+                }
             }
+            if (
+                list.length < REFERENCE_PAGE_SIZE ||
+                found.size >= fileIds.length
+            ) {
+                break;
+            }
+            offset += list.length;
         }
-        if (list.length < REFERENCE_PAGE_SIZE || found.size >= fileIds.length) {
-            break;
+    } catch (error) {
+        if (!isSkippableReferenceScanError(error)) {
+            throw error;
         }
-        offset += list.length;
+        warnSkippedReferenceScan({ ...target, error });
+    }
+    return found;
+}
+
+export async function readAllReferencedIdsInStructuredTargetFromRepository(
+    target: StructuredReferenceTarget,
+): Promise<Set<string>> {
+    const found = new Set<string>();
+    try {
+        let offset = 0;
+        while (true) {
+            const rows = await readMany(target.collection, {
+                fields: [target.field],
+                limit: REFERENCE_PAGE_SIZE,
+                offset,
+            });
+            const list = rows as Array<Record<string, unknown>>;
+            for (const row of list) {
+                const fileId = normalizeDirectusFileId(row[target.field]);
+                if (fileId) {
+                    found.add(fileId);
+                }
+            }
+            if (list.length < REFERENCE_PAGE_SIZE) {
+                break;
+            }
+            offset += list.length;
+        }
+    } catch (error) {
+        if (!isSkippableReferenceScanError(error)) {
+            throw error;
+        }
+        warnSkippedReferenceScan({ ...target, error });
     }
     return found;
 }
@@ -252,28 +504,71 @@ export async function readReferencedIdsInMarkdownTargetFromRepository(
         return found;
     }
 
-    let offset = 0;
-    while (true) {
-        const rows = await readMany(target.collection, {
-            fields: [target.field],
-            limit: REFERENCE_PAGE_SIZE,
-            offset,
-        });
-        const list = rows as Array<Record<string, unknown>>;
-        for (const row of list) {
-            collectReferencedAssetIdsFromUnknown(
-                row[target.field],
-                candidateSet,
-                found,
-            );
-            if (found.size >= candidateSet.size) {
-                return found;
+    try {
+        let offset = 0;
+        while (true) {
+            const rows = await readMany(target.collection, {
+                fields: [target.field],
+                limit: REFERENCE_PAGE_SIZE,
+                offset,
+            });
+            const list = rows as Array<Record<string, unknown>>;
+            for (const row of list) {
+                collectReferencedAssetIdsFromUnknown(
+                    row[target.field],
+                    candidateSet,
+                    found,
+                    { includeBareUuid: false },
+                );
+                if (found.size >= candidateSet.size) {
+                    return found;
+                }
             }
+            if (list.length < REFERENCE_PAGE_SIZE) {
+                break;
+            }
+            offset += list.length;
         }
-        if (list.length < REFERENCE_PAGE_SIZE) {
-            break;
+    } catch (error) {
+        if (!isSkippableReferenceScanError(error)) {
+            throw error;
         }
-        offset += list.length;
+        warnSkippedReferenceScan({ ...target, error });
+    }
+    return found;
+}
+
+export async function readAllReferencedIdsInMarkdownTargetFromRepository(
+    target: MarkdownReferenceTarget,
+): Promise<Set<string>> {
+    const found = new Set<string>();
+    try {
+        let offset = 0;
+        while (true) {
+            const rows = await readMany(target.collection, {
+                fields: [target.field],
+                limit: REFERENCE_PAGE_SIZE,
+                offset,
+            });
+            const list = rows as Array<Record<string, unknown>>;
+            for (const row of list) {
+                collectReferencedAssetIdsFromUnknown(
+                    row[target.field],
+                    null,
+                    found,
+                    { includeBareUuid: false },
+                );
+            }
+            if (list.length < REFERENCE_PAGE_SIZE) {
+                break;
+            }
+            offset += list.length;
+        }
+    } catch (error) {
+        if (!isSkippableReferenceScanError(error)) {
+            throw error;
+        }
+        warnSkippedReferenceScan({ ...target, error });
     }
     return found;
 }
@@ -322,6 +617,135 @@ export async function readDeletableOwnedFilesFromRepository(
     }
 
     return candidateFileIds.filter((fileId) => deletable.has(fileId));
+}
+
+function getCandidateCleanupTimestamp(row: StaleFileGcCandidate): string {
+    const createdAt = row.date_created || row.created_on || "";
+    if (row.app_lifecycle === "detached") {
+        return row.app_detached_at || createdAt;
+    }
+    if (row.app_lifecycle === "quarantined") {
+        return row.app_quarantined_at || createdAt;
+    }
+    if (row.app_lifecycle === "deleted" || row.app_lifecycle === "deleting") {
+        return row.app_delete_next_retry_at || row.app_deleted_at || createdAt;
+    }
+    return createdAt;
+}
+
+function sortStaleFileGcCandidates(
+    rows: StaleFileGcCandidate[],
+): StaleFileGcCandidate[] {
+    return [...rows].sort((left, right) => {
+        const leftTimestamp = getCandidateCleanupTimestamp(left);
+        const rightTimestamp = getCandidateCleanupTimestamp(right);
+        if (leftTimestamp !== rightTimestamp) {
+            return leftTimestamp.localeCompare(rightTimestamp);
+        }
+        return left.id.localeCompare(right.id);
+    });
+}
+
+export async function readStaleFileGcCandidatesFromRepository(params: {
+    detachedBefore: string;
+    quarantinedBefore: string;
+    deleteRetryBefore: string;
+    limit: number;
+}): Promise<StaleFileGcCandidate[]> {
+    const fields = [
+        "id",
+        "created_on",
+        "app_lifecycle",
+        "app_detached_at",
+        "app_quarantined_at",
+        "app_deleted_at",
+        "app_delete_attempts",
+        "app_delete_next_retry_at",
+        "app_delete_last_error",
+        "app_delete_dead_lettered_at",
+    ];
+    const [detachedRows, quarantinedRows, deletingRows, deletedRows] =
+        await Promise.all([
+            readMany("directus_files", {
+                filter: {
+                    _and: [
+                        { app_lifecycle: { _eq: "detached" } },
+                        { app_detached_at: { _nnull: true } },
+                        {
+                            app_detached_at: {
+                                _lte: params.detachedBefore,
+                            },
+                        },
+                    ],
+                } as JsonObject,
+                fields,
+                sort: ["app_detached_at", "id"],
+                limit: params.limit,
+            }),
+            readMany("directus_files", {
+                filter: {
+                    _and: [
+                        { app_lifecycle: { _eq: "quarantined" } },
+                        { app_quarantined_at: { _nnull: true } },
+                        {
+                            app_quarantined_at: {
+                                _lte: params.quarantinedBefore,
+                            },
+                        },
+                    ],
+                } as JsonObject,
+                fields,
+                sort: ["app_quarantined_at", "id"],
+                limit: params.limit,
+            }),
+            readMany("directus_files", {
+                filter: {
+                    _and: [
+                        { app_lifecycle: { _eq: "deleting" } },
+                        {
+                            _or: [
+                                { app_delete_next_retry_at: { _null: true } },
+                                {
+                                    app_delete_next_retry_at: {
+                                        _lte: params.deleteRetryBefore,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                } as JsonObject,
+                fields,
+                sort: ["app_delete_next_retry_at", "app_deleted_at", "id"],
+                limit: params.limit,
+            }),
+            readMany("directus_files", {
+                filter: {
+                    _and: [
+                        { app_lifecycle: { _eq: "deleted" } },
+                        {
+                            _or: [
+                                { app_delete_next_retry_at: { _null: true } },
+                                {
+                                    app_delete_next_retry_at: {
+                                        _lte: params.deleteRetryBefore,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                } as JsonObject,
+                fields,
+                sort: ["app_delete_next_retry_at", "app_deleted_at", "id"],
+                limit: params.limit,
+            }),
+        ]);
+
+    return sortStaleFileGcCandidates([
+        ...(detachedRows as StaleFileGcCandidate[]),
+        ...(quarantinedRows as StaleFileGcCandidate[]),
+        ...(deletingRows as StaleFileGcCandidate[]),
+        ...(deletedRows as StaleFileGcCandidate[]),
+    ]).slice(0, params.limit);
 }
 
 function normalizeOwnerIds(values: unknown[]): string[] {
@@ -391,6 +815,6 @@ export async function readAlbumPhotoFileIdsFromRepository(
 
 export async function deleteOrphanFileFromRepository(
     fileId: string,
-): Promise<void> {
-    await deleteDirectusFile(fileId);
+): Promise<DeleteDirectusFileResult> {
+    return await deleteDirectusFile(fileId);
 }

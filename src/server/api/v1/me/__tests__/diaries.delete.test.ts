@@ -7,6 +7,7 @@ import { createMockAPIContext } from "@/__tests__/helpers/mock-api-context";
 vi.mock("@/server/directus/client", () => ({
     createOne: vi.fn(),
     deleteOne: vi.fn(),
+    deleteDirectusFile: vi.fn(),
     readMany: vi.fn(),
     readOneById: vi.fn(),
     updateOne: vi.fn(),
@@ -28,7 +29,6 @@ vi.mock("@/server/markdown/render", () => ({
 }));
 
 vi.mock("@/server/api/v1/shared/file-cleanup", () => ({
-    cleanupOwnedOrphanDirectusFiles: vi.fn().mockResolvedValue([]),
     collectDiaryCommentCleanupCandidates: vi.fn().mockResolvedValue({
         candidateFileIds: ["comment-file"],
         ownerUserIds: ["comment-user"],
@@ -51,14 +51,44 @@ vi.mock("@/server/api/v1/shared/file-cleanup", () => ({
     ),
 }));
 
-import { deleteOne, readMany } from "@/server/directus/client";
-import { cleanupOwnedOrphanDirectusFiles } from "@/server/api/v1/shared/file-cleanup";
+vi.mock("@/server/files/file-detach-jobs", () => ({
+    enqueueFileDetachJob: vi.fn().mockResolvedValue({
+        jobId: "detach-job-1",
+        status: "pending",
+        candidateFileIds: [],
+    }),
+}));
+
+vi.mock("@/server/files/resource-lifecycle", () => ({
+    resourceLifecycle: {
+        releaseOwnerResources: vi.fn().mockResolvedValue({
+            jobId: "release-job-1",
+            status: "pending",
+            candidateFileIds: [],
+            deletedReferences: 0,
+        }),
+    },
+}));
+
+vi.mock("@/server/application/shared/search-index", () => ({
+    searchIndex: {
+        remove: vi.fn().mockResolvedValue(undefined),
+    },
+}));
+
+import {
+    deleteDirectusFile,
+    deleteOne,
+    readMany,
+} from "@/server/directus/client";
+import { resourceLifecycle } from "@/server/files/resource-lifecycle";
 import { handleMeDiaries } from "@/server/api/v1/me/diaries";
 
+const mockedDeleteDirectusFile = vi.mocked(deleteDirectusFile);
 const mockedDeleteOne = vi.mocked(deleteOne);
 const mockedReadMany = vi.mocked(readMany);
-const mockedCleanupOwnedOrphanDirectusFiles = vi.mocked(
-    cleanupOwnedOrphanDirectusFiles,
+const mockedReleaseOwnerResources = vi.mocked(
+    resourceLifecycle.releaseOwnerResources,
 );
 
 function makeDiary(overrides: Record<string, unknown> = {}) {
@@ -82,7 +112,10 @@ beforeEach(() => {
 
 describe("DELETE /me/diaries/:id", () => {
     it("删除时会合并正文、图片与关联评论中的资源候选", async () => {
-        mockedReadMany.mockResolvedValue([makeDiary()] as never);
+        mockedReadMany
+            .mockResolvedValueOnce([makeDiary()] as never)
+            .mockResolvedValueOnce([{ id: "image-1" }] as never)
+            .mockResolvedValueOnce([{ id: "comment-1" }] as never);
         mockedDeleteOne.mockResolvedValue(undefined as never);
 
         const ctx = createMockAPIContext({
@@ -98,9 +131,21 @@ describe("DELETE /me/diaries/:id", () => {
         );
 
         expect(response.status).toBe(200);
-        expect(mockedCleanupOwnedOrphanDirectusFiles).toHaveBeenCalledWith({
-            candidateFileIds: ["image-file", "content-file", "comment-file"],
-            ownerUserIds: ["user-1", "comment-user"],
+        expect(mockedReleaseOwnerResources).toHaveBeenCalledWith({
+            ownerCollection: "app_diary_images",
+            ownerId: "image-1",
         });
+        expect(mockedReleaseOwnerResources).toHaveBeenCalledWith({
+            ownerCollection: "app_diary_comments",
+            ownerId: "comment-1",
+        });
+        expect(mockedReleaseOwnerResources).toHaveBeenCalledWith({
+            ownerCollection: "app_diaries",
+            ownerId: "diary-1",
+        });
+        expect(
+            mockedReleaseOwnerResources.mock.invocationCallOrder[0],
+        ).toBeLessThan(mockedDeleteOne.mock.invocationCallOrder[0] ?? 0);
+        expect(mockedDeleteDirectusFile).not.toHaveBeenCalled();
     });
 });
