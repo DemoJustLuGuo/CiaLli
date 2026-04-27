@@ -143,6 +143,15 @@ pnpm docker:up
 
 正式部署流程统一使用安装器。安装器内部仍基于主 [docker-compose.yml](/Users/uednd/code/CiaLli-Channel/docker-compose.yml) 启动生产服务，并自动绕过本地开发用 override 配置。
 
+如宿主机已有 nginx 负责 TLS 与公网入口，不要再启动 compose 内置的 `proxy` 服务。使用 nginx 覆盖配置将 `web` 仅绑定到宿主机回环地址：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d \
+  postgres redis minio minio-init seed-postgres-restore seed-minio-restore directus web worker
+```
+
+默认绑定 `127.0.0.1:4321`，可通过 `WEB_HOST_BIND` 与 `WEB_HOST_PORT` 调整。nginx 应直接反代到该回环地址，例如 `proxy_pass http://127.0.0.1:4321;`。同一宿主机部署多个实例时，还需要通过 `DIRECTUS_HOST_PORT`、`REDIS_HOST_PORT` 与 `MINIO_CONSOLE_HOST_PORT` 为每个实例分配独立的回环端口。该形态下 `proxy` 只会在显式启用 `caddy-proxy` profile 时启动。
+
 ## 演示种子与后台账号
 
 仓库内置的演示种子覆盖：
